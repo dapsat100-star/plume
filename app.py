@@ -720,6 +720,26 @@ def _ang_sep(a_deg: float, b_deg: float) -> float:
     d = abs((a_deg - b_deg + 180.0) % 360.0 - 180.0)
     return d
 
+# wrapper: expande janela automaticamente até achar o oposto (até ~10 dias)
+def find_dir_pair_auto(sat, ts, start_dt, base_hours: int = 72, min_sep_deg: int = 160):
+    hours_list = []
+    if base_hours and base_hours > 0:
+        hours_list.append(int(base_hours))
+    hours_list += [72, 120, 168, 240]
+    seen = set(); ordered = []
+    for h in hours_list:
+        if h in seen:
+            continue
+        seen.add(h); ordered.append(h)
+    last_pair = {}
+    for h in ordered:
+        step = 60 if h <= 72 else 120
+        pair = find_next_direction_pair_vec(sat, ts, start_dt, max_hours=h, step_s=step, min_sep_deg=min_sep_deg)
+        if 'opposite' in pair:
+            return pair, h
+        last_pair = pair
+    return last_pair, ordered[-1]
+
 # --- adiciona seta de direção no centro do footprint ---
 def add_heading_arrow(m, lat, lon, heading_deg, color="#00c853"):
     try:
@@ -925,4 +945,3 @@ else:
     add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
