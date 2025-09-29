@@ -320,6 +320,13 @@ with st.sidebar:
         obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
         obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
 
+        # Mostrar ambos os exemplos (ASC & DESC)
+        show_ad_examples = st.checkbox(
+            "Mostrar exemplos Ascendente & Descendente (±90 min)",
+            value=True,
+            help="Procura o primeiro caso ascendente e o primeiro descendente em ±90 min do horário acima.",
+        )
+
     # 🔎 Busca com AUTOCOMPLETE (Photon/Nominatim/ArcGIS)
     with st.expander("🔎 Buscar lugar (autocomplete)", expanded=False):
         q = st.text_input("Digite um lugar, endereço ou lat,lon", key="query_text", placeholder="Ex.: 'Cabiúnas, Macaé' ou -22.91,-41.42")
@@ -476,6 +483,28 @@ def _inject_geocoder_css(m, font_px: int = 20, result_px: int = 18, width_px: in
         m.get_root().html.add_child(Element(css))
     except Exception:
         pass
+
+# --- encontrar exemplos ascendente/descendente próximos ---
+def find_pass_example_headings(tle_l1, tle_l2, center_dt, window_min: int = 90, step_s: int = 120):
+    """Retorna dict com 'asc' e/ou 'desc' → (heading_deg, datetime_utc).
+    Varre ±window_min minutos a partir de center_dt em passos de step_s segundos.
+    """
+    found = {}
+    max_steps = int((window_min * 60) // step_s)
+    for k in range(max_steps + 1):
+        offsets = [0] if k == 0 else [k * step_s, -k * step_s]
+        for off in offsets:
+            t = center_dt + dt.timedelta(seconds=off)
+            try:
+                heading, is_asc = tle_heading_and_sense(tle_l1, tle_l2, t)
+            except Exception:
+                continue
+            key = 'asc' if is_asc else 'desc'
+            if key not in found:
+                found[key] = (heading, t)
+            if 'asc' in found and 'desc' in found:
+                return found
+    return found
 
 # ================== TLE / FOOTPRINT ==================
 def _meters_per_deg(lat_deg: float):
@@ -709,26 +738,56 @@ else:
         try:
             sat_name = ss.tle_choice
             l1, l2 = ss.tle_cache[sat_name]
-            t_utc = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
-            heading_deg, is_asc = tle_heading_and_sense(l1, l2, t_utc)
-            label = "Ascendente" if is_asc else "Descendente"
-            poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading_deg)
-            folium.Polygon(
-                locations=poly,
-                color="#00c853",        # verde forte (traço externo)
-                weight=4,                # traço mais espesso
-                opacity=1.0,
-                fill=True,
-                fill_color="#00c853",
-                fill_opacity=0.12,       # leve preenchimento
-                tooltip=f"GHGSat {sat_name} • {label} • heading {heading_deg:.1f}° @ {t_utc.isoformat()}"
-            ).add_to(m1)
-            # seta de direção do voo
-            add_heading_arrow(m1, lat, lon, heading_deg, color="#00c853")
-            st.caption(f"🛰 {sat_name} · heading {heading_deg:.1f}° (N=0°, horário) · {label}")
+            t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
+
+            if show_ad_examples:
+                samples = find_pass_example_headings(l1, l2, t_center, window_min=90, step_s=120)
+
+                if 'asc' in samples:
+                    hA, tA = samples['asc']
+                    fgA = folium.FeatureGroup(name=f"Footprint Ascendente ({sat_name})", show=True)
+                    polyA = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=hA)
+                    folium.Polygon(
+                        locations=polyA,
+                        color="#00c853", weight=4, opacity=1.0,
+                        fill=True, fill_color="#00c853", fill_opacity=0.12,
+                        tooltip=f"{sat_name} • Ascendente • heading {hA:.1f}° @ {tA.isoformat()}"
+                    ).add_to(fgA)
+                    add_heading_arrow(fgA, lat, lon, hA, color="#00c853")
+                    fgA.add_to(m1)
+                    st.caption(f"🛰 {sat_name} • Ascendente • heading {hA:.1f}° @ {tA.isoformat()}")
+
+                if 'desc' in samples:
+                    hD, tD = samples['desc']
+                    fgD = folium.FeatureGroup(name=f"Footprint Descendente ({sat_name})", show=True)
+                    polyD = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=hD)
+                    folium.Polygon(
+                        locations=polyD,
+                        color="#ff6d00", weight=4, opacity=1.0,
+                        fill=True, fill_color="#ff6d00", fill_opacity=0.10,
+                        tooltip=f"{sat_name} • Descendente • heading {hD:.1f}° @ {tD.isoformat()}"
+                    ).add_to(fgD)
+                    add_heading_arrow(fgD, lat, lon, hD, color="#ff6d00")
+                    fgD.add_to(m1)
+                    st.caption(f"🛰 {sat_name} • Descendente • heading {hD:.1f}° @ {tD.isoformat()}")
+
+                if 'asc' not in samples and 'desc' not in samples:
+                    st.warning('Não foi possível encontrar exemplos ascendente/descendente na janela ±90 min.')
+            else:
+                heading_deg, is_asc = tle_heading_and_sense(l1, l2, t_center)
+                label = "Ascendente" if is_asc else "Descendente"
+                color = "#00c853" if is_asc else "#ff6d00"
+                poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading_deg)
+                folium.Polygon(
+                    locations=poly,
+                    color=color, weight=4, opacity=1.0,
+                    fill=True, fill_color=color, fill_opacity=0.12,
+                    tooltip=f"{sat_name} • {label} • heading {heading_deg:.1f}° @ {t_center.isoformat()}"
+                ).add_to(m1)
+                add_heading_arrow(m1, lat, lon, heading_deg, color=color)
+                st.caption(f"🛰 {sat_name} • {label} • heading {heading_deg:.1f}° @ {t_center.isoformat()}")
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
