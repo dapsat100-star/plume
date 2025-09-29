@@ -536,10 +536,10 @@ def find_pass_example_headings(tle_l1, tle_l2, center_dt, site_lat, site_lon,
     return found
 
 # --- busca simples (visual): próximo ASC e próximo DESC à frente ---
-def find_next_direction_pair(tle_l1, tle_l2, start_dt, max_hours: int = 72, step_s: int = 60):
-    """Busca à frente, a partir de start_dt, o primeiro instante (qualquer direção)
-    e o primeiro instante subsequente com **direção oposta** (ASC↔DESC).
-    Retorna {'first': (heading, dt, is_asc), 'opposite': (...)}.
+def find_next_direction_pair(tle_l1, tle_l2, start_dt, max_hours: int = 72, step_s: int = 60, min_sep_deg: int = 160):
+    """Busca à frente o primeiro instante (qualquer direção) e o primeiro subsequente
+    com direção oposta **e** com separação angular >= min_sep_deg do primeiro.
+    Retorna {'first': (h1, t1, asc1), 'opposite': (h2, t2, asc2)}.
     """
     out = {}
     try:
@@ -548,6 +548,24 @@ def find_next_direction_pair(tle_l1, tle_l2, start_dt, max_hours: int = 72, step
         sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
     except Exception:
         return out
+
+    t = start_dt
+    end = start_dt + dt.timedelta(hours=max_hours)
+    h1 = None; asc1 = None
+    while t <= end and ('opposite' not in out):
+        try:
+            h, asc = tle_heading_and_sense(tle_l1, tle_l2, t)
+            if 'first' not in out:
+                out['first'] = (h, t, asc)
+                h1, asc1 = h, asc
+            else:
+                if asc != asc1 and _ang_sep(h, h1) >= float(min_sep_deg):
+                    out['opposite'] = (h, t, asc)
+                    break
+        except Exception:
+            pass
+        t += dt.timedelta(seconds=step_s)
+    return out
 
     t = start_dt
     end = start_dt + dt.timedelta(hours=max_hours)
@@ -635,6 +653,11 @@ def dest_point(lat, lon, bearing_deg, dist_m):
     λ2 = λ1 + atan2(sin(θ)*sin(δ)*cos(φ1), cos(δ) - sin(φ1)*sin(φ2))
     lon2 = (degrees(λ2) + 540) % 360 - 180
     return degrees(φ2), lon2
+
+# separação angular mais curta entre dois azimutes (0–180°)
+def _ang_sep(a_deg: float, b_deg: float) -> float:
+    d = abs((a_deg - b_deg + 180.0) % 360.0 - 180.0)
+    return d
 
 # --- adiciona seta de direção no centro do footprint ---
 def add_heading_arrow(m, lat, lon, heading_deg, color="#00c853"):
@@ -802,7 +825,7 @@ else:
             t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
 
             # Sempre mostrar dois footprints (visual): primeiro instante e o primeiro com direção oposta
-            pair = find_next_direction_pair(l1, l2, t_center, max_hours=int(ad_hours), step_s=60)
+            pair = find_next_direction_pair(l1, l2, t_center, max_hours=int(ad_hours), step_s=60, min_sep_deg=160)
 
             if 'first' in pair:
                 h1, t1, asc1 = pair['first']
@@ -827,10 +850,10 @@ else:
                 poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
                 folium.Polygon(locations=poly2, color=color2, weight=4, opacity=1.0,
                                fill=True, fill_color=color2, fill_opacity=0.10,
-                               tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° @ {t2.isoformat()}").add_to(fg2)
+                               tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}").add_to(fg2)
                 add_heading_arrow(fg2, lat, lon, h2, color=color2)
                 fg2.add_to(m1)
-                st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° @ {t2.isoformat()}")
+                st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}")
 
             if 'first' not in pair and 'opposite' not in pair:
                 st.warning('Não foi possível encontrar um par (ASC/DESC) dentro do limite definido.')
