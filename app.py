@@ -886,25 +886,7 @@ else:
             t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
 
             # Sempre mostrar dois footprints (visual): primeiro instante e o primeiro com direção oposta
-            # wrapper: expande janela automaticamente até achar o oposto (até ~10 dias)
-def find_dir_pair_auto(sat, ts, start_dt, base_hours: int = 72, min_sep_deg: int = 160):
-    hours_list = []
-    if base_hours and base_hours > 0:
-        hours_list.append(int(base_hours))
-    hours_list += [72, 120, 168, 240]
-    seen = set(); ordered = []
-    for h in hours_list:
-        if h in seen: continue
-        seen.add(h); ordered.append(h)
-    for h in ordered:
-        step = 60 if h <= 72 else 120
-        pair = find_next_direction_pair_vec(sat, ts, start_dt, max_hours=h, step_s=step, min_sep_deg=min_sep_deg)
-        if 'opposite' in pair:
-            return pair, h
-        last_pair = pair
-    return last_pair, ordered[-1]
-
-ts_obj, sat_obj = get_sat_cached(sat_name, l1, l2)
+            ts_obj, sat_obj = get_sat_cached(sat_name, l1, l2)
             pair, used_h = find_dir_pair_auto(sat_obj, ts_obj, t_center, base_hours=int(ad_hours), min_sep_deg=160)
 
             if 'first' in pair:
@@ -943,3 +925,4 @@ ts_obj, sat_obj = get_sat_cached(sat_name, l1, l2)
     add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
+
