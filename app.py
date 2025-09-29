@@ -320,6 +320,11 @@ with st.sidebar:
         obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
         obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
 
+        # Par visual: buscar próximo par com direção diferente (ASC & DESC)
+        st.caption("Footprints visuais: busca um par de direções reais (ASC & DESC) à frente a partir do horário.")
+        ad_hours = st.slider("Limite de busca à frente (horas)", 12, 168, 72, 6,
+                             help="Se não encontrar o par dentro do limite, nada é desenhado.")
+
         # Mostrar ambos os exemplos (ASC & DESC)
         show_ad_examples = st.checkbox(
             "Mostrar exemplos Ascendente & Descendente (±90 min)",
@@ -485,26 +490,82 @@ def _inject_geocoder_css(m, font_px: int = 20, result_px: int = 18, width_px: in
         pass
 
 # --- encontrar exemplos ascendente/descendente próximos ---
-def find_pass_example_headings(tle_l1, tle_l2, center_dt, window_min: int = 90, step_s: int = 120):
-    """Retorna dict com 'asc' e/ou 'desc' → (heading_deg, datetime_utc).
+def _haversine_km(lat1, lon1, lat2, lon2):
+    from math import radians, sin, cos, sqrt, asin
+    R = 6371.0088
+    φ1, λ1, φ2, λ2 = map(radians, [lat1, lon1, lat2, lon2])
+    dφ = φ2 - φ1; dλ = λ2 - λ1
+    a = sin(dφ/2)**2 + cos(φ1)*cos(φ2)*sin(dλ/2)**2
+    return 2*R*asin(min(1, sqrt(a)))
+
+def find_pass_example_headings(tle_l1, tle_l2, center_dt, site_lat, site_lon,
+                                window_min: int = 120, step_s: int = 30, max_dist_km: int = 500):
+    """Retorna dict com 'asc' e/ou 'desc' → (heading_deg, datetime_utc, dist_km)
+    procurando por instantes em que o subponto do satélite esteja **perto do local** (≤ max_dist_km).
     Varre ±window_min minutos a partir de center_dt em passos de step_s segundos.
     """
     found = {}
+    try:
+        from skyfield.api import load, EarthSatellite
+        ts = load.timescale()
+        sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
+    except Exception:
+        return found
+
     max_steps = int((window_min * 60) // step_s)
     for k in range(max_steps + 1):
         offsets = [0] if k == 0 else [k * step_s, -k * step_s]
         for off in offsets:
             t = center_dt + dt.timedelta(seconds=off)
             try:
-                heading, is_asc = tle_heading_and_sense(tle_l1, tle_l2, t)
+                sp = sat.at(ts.utc(t.year, t.month, t.day, t.hour, t.minute, t.second)).subpoint()
+                slat, slon = sp.latitude.degrees, sp.longitude.degrees
+                dist = _haversine_km(site_lat, site_lon, slat, slon)
+                if dist > max_dist_km:
+                    continue
+                # perto o suficiente: classifica
+                h, asc = tle_heading_and_sense(tle_l1, tle_l2, t)
+                key = 'asc' if asc else 'desc'
+                if key not in found:
+                    found[key] = (h, t, dist)
+                if 'asc' in found and 'desc' in found:
+                    return found
             except Exception:
                 continue
-            key = 'asc' if is_asc else 'desc'
-            if key not in found:
-                found[key] = (heading, t)
-            if 'asc' in found and 'desc' in found:
-                return found
     return found
+    return found
+
+# --- busca simples (visual): próximo ASC e próximo DESC à frente ---
+def find_next_direction_pair(tle_l1, tle_l2, start_dt, max_hours: int = 72, step_s: int = 60):
+    """Busca à frente, a partir de start_dt, o primeiro instante (qualquer direção)
+    e o primeiro instante subsequente com **direção oposta** (ASC↔DESC).
+    Retorna {'first': (heading, dt, is_asc), 'opposite': (...)}.
+    """
+    out = {}
+    try:
+        from skyfield.api import load, EarthSatellite
+        ts = load.timescale()
+        sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
+    except Exception:
+        return out
+
+    t = start_dt
+    end = start_dt + dt.timedelta(hours=max_hours)
+    first_dir = None
+    while t <= end and ('opposite' not in out):
+        try:
+            h, asc = tle_heading_and_sense(tle_l1, tle_l2, t)
+            if 'first' not in out:
+                out['first'] = (h, t, asc)
+                first_dir = asc
+            else:
+                if asc != first_dir:
+                    out['opposite'] = (h, t, asc)
+                    break
+        except Exception:
+            pass
+        t += dt.timedelta(seconds=step_s)
+    return out
 
 # ================== TLE / FOOTPRINT ==================
 def _meters_per_deg(lat_deg: float):
@@ -740,52 +801,39 @@ else:
             l1, l2 = ss.tle_cache[sat_name]
             t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
 
-            if show_ad_examples:
-                samples = find_pass_example_headings(l1, l2, t_center, window_min=90, step_s=120)
+            # Sempre mostrar dois footprints (visual): primeiro instante e o primeiro com direção oposta
+            pair = find_next_direction_pair(l1, l2, t_center, max_hours=int(ad_hours), step_s=60)
 
-                if 'asc' in samples:
-                    hA, tA = samples['asc']
-                    fgA = folium.FeatureGroup(name=f"Footprint Ascendente ({sat_name})", show=True)
-                    polyA = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=hA)
-                    folium.Polygon(
-                        locations=polyA,
-                        color="#00c853", weight=4, opacity=1.0,
-                        fill=True, fill_color="#00c853", fill_opacity=0.12,
-                        tooltip=f"{sat_name} • Ascendente • heading {hA:.1f}° @ {tA.isoformat()}"
-                    ).add_to(fgA)
-                    add_heading_arrow(fgA, lat, lon, hA, color="#00c853")
-                    fgA.add_to(m1)
-                    st.caption(f"🛰 {sat_name} • Ascendente • heading {hA:.1f}° @ {tA.isoformat()}")
+            if 'first' in pair:
+                h1, t1, asc1 = pair['first']
+                label1 = 'Ascendente' if asc1 else 'Descendente'
+                color1 = '#00c853' if asc1 else '#ff6d00'
+                name1 = ('ASC' if asc1 else 'DESC') + f" (visual, {sat_name})"
+                fg1 = folium.FeatureGroup(name=name1, show=True)
+                poly1 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h1)
+                folium.Polygon(locations=poly1, color=color1, weight=4, opacity=1.0,
+                               fill=True, fill_color=color1, fill_opacity=0.12,
+                               tooltip=f"{sat_name} • {label1} (visual) • heading {h1:.1f}° @ {t1.isoformat()}").add_to(fg1)
+                add_heading_arrow(fg1, lat, lon, h1, color=color1)
+                fg1.add_to(m1)
+                st.caption(f"🛰 {sat_name} • {label1} (visual) • heading {h1:.1f}° @ {t1.isoformat()}")
 
-                if 'desc' in samples:
-                    hD, tD = samples['desc']
-                    fgD = folium.FeatureGroup(name=f"Footprint Descendente ({sat_name})", show=True)
-                    polyD = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=hD)
-                    folium.Polygon(
-                        locations=polyD,
-                        color="#ff6d00", weight=4, opacity=1.0,
-                        fill=True, fill_color="#ff6d00", fill_opacity=0.10,
-                        tooltip=f"{sat_name} • Descendente • heading {hD:.1f}° @ {tD.isoformat()}"
-                    ).add_to(fgD)
-                    add_heading_arrow(fgD, lat, lon, hD, color="#ff6d00")
-                    fgD.add_to(m1)
-                    st.caption(f"🛰 {sat_name} • Descendente • heading {hD:.1f}° @ {tD.isoformat()}")
+            if 'opposite' in pair:
+                h2, t2, asc2 = pair['opposite']
+                label2 = 'Ascendente' if asc2 else 'Descendente'
+                color2 = '#00c853' if asc2 else '#ff6d00'
+                name2 = ('ASC' if asc2 else 'DESC') + f" (visual, {sat_name})"
+                fg2 = folium.FeatureGroup(name=name2, show=True)
+                poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
+                folium.Polygon(locations=poly2, color=color2, weight=4, opacity=1.0,
+                               fill=True, fill_color=color2, fill_opacity=0.10,
+                               tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° @ {t2.isoformat()}").add_to(fg2)
+                add_heading_arrow(fg2, lat, lon, h2, color=color2)
+                fg2.add_to(m1)
+                st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° @ {t2.isoformat()}")
 
-                if 'asc' not in samples and 'desc' not in samples:
-                    st.warning('Não foi possível encontrar exemplos ascendente/descendente na janela ±90 min.')
-            else:
-                heading_deg, is_asc = tle_heading_and_sense(l1, l2, t_center)
-                label = "Ascendente" if is_asc else "Descendente"
-                color = "#00c853" if is_asc else "#ff6d00"
-                poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading_deg)
-                folium.Polygon(
-                    locations=poly,
-                    color=color, weight=4, opacity=1.0,
-                    fill=True, fill_color=color, fill_opacity=0.12,
-                    tooltip=f"{sat_name} • {label} • heading {heading_deg:.1f}° @ {t_center.isoformat()}"
-                ).add_to(m1)
-                add_heading_arrow(m1, lat, lon, heading_deg, color=color)
-                st.caption(f"🛰 {sat_name} • {label} • heading {heading_deg:.1f}° @ {t_center.isoformat()}")
+            if 'first' not in pair and 'opposite' not in pair:
+                st.warning('Não foi possível encontrar um par (ASC/DESC) dentro do limite definido.')
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
