@@ -49,12 +49,15 @@ st.markdown(
 /* ⬆️ Aumentar fonte do Geocoder no mapa (Leaflet) */
 .leaflet-control-geocoder,
 .leaflet-control-geocoder * {
-  font-size: 1.05rem !important;   /* ~16-17px */
+  font-size: 16px !important;
 }
 .leaflet-control-geocoder-form input {
-  font-size: 1.05rem !important;
-  height: 34px !important;
-  padding: 6px 10px !important;
+  font-size: 16px !important;
+  height: 40px !important;
+  padding: 8px 12px !important;
+}
+.leaflet-control-geocoder-form input::placeholder {
+  font-size: 16px !important;
 }
 
 /* 🔖 Logo fixo (topo direito) */
