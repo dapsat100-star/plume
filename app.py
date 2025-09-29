@@ -607,7 +607,7 @@ def find_next_direction_pair_vec(sat, ts, start_dt, max_hours: int = 72, step_s:
 
 # --- legenda ASC/DESC ---
 def add_ad_legend(m, font_px: int = 18):
-    """Adiciona legenda fixa (ASC verde, DESC laranja) dentro do iframe do mapa."""
+    """Adiciona legenda fixa (ASC verde, DESC vermelho) dentro do iframe do mapa."""
     try:
         if Element is None:
             return
@@ -623,7 +623,7 @@ def add_ad_legend(m, font_px: int = 18):
             <span>Órbita ascendente</span>
           </div>
           <div style=\"display:flex; align-items:center; gap:8px; margin:2px 0;\">
-            <span style=\"display:inline-block; width:14px; height:14px; background:#ff6d00; border:2px solid #ff6d00;\"></span>
+            <span style=\"display:inline-block; width:14px; height:14px; background:#ff0000; border:2px solid #ff0000;\"></span>
             <span>Órbita descendente</span>
           </div>
         </div>
@@ -837,6 +837,9 @@ else:
                 folium.Polygon(locations=poly1, color=color1, weight=4, opacity=1.0,
                                fill=True, fill_color=color1, fill_opacity=0.12,
                                tooltip=f"{sat_name} • {label1} (visual) • heading {h1:.1f}° @ {t1.isoformat()}").add_to(fg1)
+                corn1 = poly1[:4]
+                folium.PolyLine([corn1[0], corn1[2]], color=color1, weight=3, opacity=0.8).add_to(fg1)
+                folium.PolyLine([corn1[1], corn1[3]], color=color1, weight=3, opacity=0.8).add_to(fg1)
                 add_heading_arrow(fg1, lat, lon, h1, color=color1)
                 fg1.add_to(m1)
                 st.caption(f"🛰 {sat_name} • {label1} (visual) • heading {h1:.1f}° @ {t1.isoformat()}")
@@ -844,13 +847,16 @@ else:
             if 'opposite' in pair:
                 h2, t2, asc2 = pair['opposite']
                 label2 = 'Ascendente' if asc2 else 'Descendente'
-                color2 = '#00c853' if asc2 else '#ff6d00'
+                color2 = '#00c853' if asc2 else '#ff0000'
                 name2 = ('ASC' if asc2 else 'DESC') + f" (visual, {sat_name})"
                 fg2 = folium.FeatureGroup(name=name2, show=True)
                 poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
                 folium.Polygon(locations=poly2, color=color2, weight=4, opacity=1.0,
                                fill=True, fill_color=color2, fill_opacity=0.10,
                                tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}").add_to(fg2)
+                corn2 = poly2[:4]
+                folium.PolyLine([corn2[0], corn2[2]], color=color2, weight=3, opacity=0.8).add_to(fg2)
+                folium.PolyLine([corn2[1], corn2[3]], color=color2, weight=3, opacity=0.8).add_to(fg2)
                 add_heading_arrow(fg2, lat, lon, h2, color=color2)
                 fg2.add_to(m1)
                 st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}")
@@ -860,7 +866,7 @@ else:
                 h2 = (h1 + 180.0) % 360.0
                 asc2 = not asc1
                 label2 = 'Ascendente' if asc2 else 'Descendente'
-                color2 = '#00c853' if asc2 else '#ff6d00'
+                color2 = '#00c853' if asc2 else '#ff0000'
                 name2 = ('ASC' if asc2 else 'DESC') + f" (visual, {sat_name})"
                 fg2 = folium.FeatureGroup(name=name2, show=True)
                 poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
@@ -870,6 +876,9 @@ else:
                     fill=True, fill_color=color2, fill_opacity=0.10,
                     tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° (oposto sintético)"
                 ).add_to(fg2)
+                corn2 = poly2[:4]
+                folium.PolyLine([corn2[0], corn2[2]], color=color2, weight=3, opacity=0.8).add_to(fg2)
+                folium.PolyLine([corn2[1], corn2[3]], color=color2, weight=3, opacity=0.8).add_to(fg2)
                 add_heading_arrow(fg2, lat, lon, h2, color=color2)
                 fg2.add_to(m1)
                 st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (oposto sintético)")
@@ -879,4 +888,3 @@ else:
     add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
