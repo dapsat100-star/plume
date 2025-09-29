@@ -1,4 +1,4 @@
-# app.py — Pluma CH4 + Mira arrastável + Régua + Footprint GHGSat 5x5 km orientado por TLE (arquivo)
+# app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE do arquivo) — com anti-rerun "piscar"
 # -*- coding: utf-8 -*-
 import io, base64, datetime as dt, os
 import numpy as np
@@ -14,7 +14,7 @@ from PIL import Image
 from matplotlib import cm
 from geopy.geocoders import Nominatim
 
-# ====== CONFIG ======
+# ================== CONFIG ==================
 st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint (TLE do arquivo)", layout="wide")
 st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSat 5×5 km (via TLE)")
 
@@ -25,22 +25,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====== ESTADO ======
+# ================== ESTADO ==================
 ss = st.session_state
 ss.setdefault("source", None)
 ss.setdefault("pending_click", None)
 ss.setdefault("overlay", None)
 ss.setdefault("_update", False)
 ss.setdefault("locked", False)
-ss.setdefault("tle_cache", {})      # {name: (l1,l2)}
+ss.setdefault("tle_cache", {})
 ss.setdefault("tle_path_loaded", "")
 
-# ====== CONSTANTES ======
+# Patch 1 — defaults ESTÁVEIS para data/hora (evita loop com utcnow)
+if "obs_date" not in ss or "obs_time" not in ss:
+    _now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc, microsecond=0)
+    ss.obs_date = _now.date()
+    ss.obs_time = _now.time()
+
+# ================== CONSTANTES ==================
 PX_PER_KM_FIXED = 40            # 25 m/pixel
 V_ABS_MIN, V_ABS_MAX = 0.0, 450.0
 FOOTPRINT_SIZE_KM = 5.0         # fixo 5x5 km
 
-# ====== GEOCODING ======
+# ================== GEOCODING ==================
 @st.cache_resource
 def _geocoder():
     return Nominatim(user_agent="plume_streamlit_app")
@@ -54,7 +60,7 @@ def reverse_geocode(lat, lon):
     except Exception:
         return None
 
-# ====== SIDEBAR ======
+# ================== SIDEBAR ==================
 with st.sidebar:
     st.header("Parâmetros")
 
@@ -83,23 +89,19 @@ with st.sidebar:
         tle_path = st.text_input("Caminho do arquivo TLE no repo", value="data/ghgsat.tle",
                                  help="Formato: blocos Nome / Linha1 / Linha2.")
         reload_tle = st.button("Recarregar TLE")
-        # função de parse
+
         def load_tle_file(path):
             sats = {}
             if not os.path.exists(path):
                 return sats
             with open(path, "r", encoding="utf-8") as f:
-                lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+                lines = [ln.strip() for ln in f if ln.strip()]
             i = 0
             while i + 2 < len(lines):
-                name = lines[i]
-                l1   = lines[i+1]
-                l2   = lines[i+2]
+                name, l1, l2 = lines[i], lines[i+1], lines[i+2]
                 if l1.startswith("1 ") and l2.startswith("2 "):
-                    sats[name] = (l1, l2)
-                    i += 3
+                    sats[name] = (l1, l2); i += 3
                 else:
-                    # tenta avançar 1 linha se houver algum texto intermédio
                     i += 1
             return sats
 
@@ -113,10 +115,9 @@ with st.sidebar:
         else:
             tle_choice = st.selectbox("Satélite", list(ss.tle_cache.keys()))
 
-        # instante UTC (default: agora)
-        now_utc = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc, microsecond=0)
-        obs_date = st.date_input("Data (UTC)", value=now_utc.date())
-        obs_time = st.time_input("Hora (UTC)", value=now_utc.time())
+        # Patch 1 aplicado: usa estado
+        obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
+        obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
 
     st.markdown("---")
     c1, c2 = st.columns(2)
@@ -125,21 +126,20 @@ with st.sidebar:
     if c2.button("Selecionar outro ponto", use_container_width=True):
         ss.source = None; ss.overlay = None; ss.locked = False; ss.pending_click = None
 
-# ====== CONVERSÃO ======
-Q_gps = (float(Q_kgph) * 1000.0) / 3600.0  # kg/h -> g/s
+# ================== CONVERSÃO ==================
+Q_gps = (float( st.session_state.get('Q_kgph', 0) or 0) * 1000.0) / 3600.0  # só pra evitar NameError
+Q_gps = (float(st.sidebar.session_state.get('Taxa de emissão Q (kg CH₄/h)', 100.0)) * 1000.0) / 3600.0 \
+    if 'Taxa de emissão Q (kg CH₄/h)' in st.sidebar.session_state else (float(100.0)*1000.0)/3600.0
 
-# ====== MODELO PLUMA ======
+# ================== MODELO PLUMA ==================
 def sigma_yz(x_m, stability, is_urban=False):
-    x_km = np.maximum(x_m/1000.0, 1e-6)
-    s = stability.upper()
+    x_km = np.maximum(x_m/1000.0, 1e-6); s = stability.upper()
     if not is_urban:
-        coefs = {"A":(0.22,0.5,0.20,0.5),"B":(0.16,0.5,0.12,0.5),
-                 "C":(0.11,0.5,0.08,0.5),"D":(0.08,0.5,0.06,0.5),
-                 "E":(0.06,0.5,0.03,0.5),"F":(0.04,0.5,0.016,0.5)}
+        coefs = {"A":(0.22,0.5,0.20,0.5),"B":(0.16,0.5,0.12,0.5),"C":(0.11,0.5,0.08,0.5),
+                 "D":(0.08,0.5,0.06,0.5),"E":(0.06,0.5,0.03,0.5),"F":(0.04,0.5,0.016,0.5)}
     else:
-        coefs = {"A":(0.32,0.5,0.24,0.5),"B":(0.22,0.5,0.18,0.5),
-                 "C":(0.16,0.5,0.14,0.5),"D":(0.12,0.5,0.10,0.5),
-                 "E":(0.10,0.5,0.06,0.5),"F":(0.08,0.5,0.04,0.5)}
+        coefs = {"A":(0.32,0.5,0.24,0.5),"B":(0.22,0.5,0.18,0.5),"C":(0.16,0.5,0.14,0.5),
+                 "D":(0.12,0.5,0.10,0.5),"E":(0.10,0.5,0.06,0.5),"F":(0.08,0.5,0.04,0.5)}
     a, by, c, bz = coefs.get(s, coefs["D"])
     sigy = np.clip(a*(x_km**by)*1000.0, 1.0, None)
     sigz = np.clip(c*(x_km**bz)*1000.0, 1.0, None)
@@ -148,27 +148,20 @@ def sigma_yz(x_m, stability, is_urban=False):
 def effective_height(H, V, d, Tamb, Tstack, u):
     g = 9.80665
     F = g*V*(d**2)*(Tstack - Tamb)/(4.0*Tstack+1e-9)
-    delta_m = 3*d*V/max(u,0.1)
-    delta_b = 2.6*(F**(1/3))/max(u,0.1)
+    delta_m = 3*d*V/max(u,0.1); delta_b = 2.6*(F**(1/3))/max(u,0.1)
     return H + max(delta_m, delta_b, 0.0)
 
 def compute_conc(lat, lon, p):
-    extent_km = 2.0                 # ~1 km de raio
-    px_per_km = PX_PER_KM_FIXED     # 25 m/pixel
-    R_earth = 6371000.0
-    lat_rad = np.deg2rad(lat)
-    m_lat = np.pi*R_earth/180
-    m_lon = m_lat*np.cos(lat_rad)
-    half  = extent_km*1000/2
-    res   = int(extent_km*px_per_km)
+    extent_km = 2.0; px_per_km = PX_PER_KM_FIXED
+    R = 6371000.0; lat_rad = np.deg2rad(lat)
+    m_lat = np.pi*R/180; m_lon = m_lat*np.cos(lat_rad)
+    half = extent_km*1000/2; res = int(extent_km*px_per_km)
     x = np.linspace(-half, half, res); y = np.linspace(-half, half, res)
     X, Y = np.meshgrid(x, y)
-
     theta = np.deg2rad((p["wind_dir"]+180)%360)
     Xp =  np.cos(theta)*X + np.sin(theta)*Y
     Yp = -np.sin(theta)*X + np.cos(theta)*Y
     mask = Xp > 0.0
-
     sigy, sigz = sigma_yz(np.where(mask, Xp, 1.0), p["stability"], p["is_urban"])
     H_eff = effective_height(p["H"], p["V"], p["d"], p["Tamb"], p["Tstack"], p["u"])
     pref  = p["Q_gps"]/(2*np.pi*p["u"]*sigy*sigz + 1e-12)
@@ -176,17 +169,13 @@ def compute_conc(lat, lon, p):
         np.exp(-0.5*(H_eff**2)/(sigz**2 + 1e-12)) + np.exp(-0.5*(H_eff**2)/(sigz**2 + 1e-12))
     )
     C[~mask] = 0.0
-
-    dlat = half / m_lat
-    dlon = half / (m_lon if m_lon > 0 else 111320.0)
+    dlat = half / m_lat; dlon = half / (m_lon if m_lon > 0 else 111320.0)
     bounds = [[lat - dlat, lon - dlon], [lat + dlat, lon + dlon]]
     return C, bounds
 
 def to_ppb_safe(C_val, pres_hPa, temp_K):
-    R_local = 8.314462618
-    M_CH4_local = 16.043
-    P_pa = float(pres_hPa) * 100.0
-    return C_val * (R_local * float(temp_K)) / (M_CH4_local * P_pa) * 1e9
+    R = 8.314462618; M = 16.043; P_pa = float(pres_hPa)*100.0
+    return C_val * (R*float(temp_K)) / (M*P_pa) * 1e9
 
 def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     lut = (cm.get_cmap('jet', 256)(np.linspace(0,1,256))[:,:3]*255).astype(np.uint8)
@@ -200,56 +189,49 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ====== UTILITÁRIOS TLE / FOOTPRINT ======
-def _meters_per_deg(lat_deg: float):
+# ================== TLE / FOOTPRINT ==================
+def _meters_per_deg(lat_deg):
     R = 6371000.0
-    m_per_deg_lat = np.pi * R / 180.0
-    m_per_deg_lon = m_per_deg_lat * np.cos(np.deg2rad(lat_deg))
-    return m_per_deg_lat, max(m_per_deg_lon, 1e-6)
+    mlat = np.pi*R/180.0
+    mlon = mlat*np.cos(np.deg2rad(lat_deg))
+    return mlat, max(mlon, 1e-6)
 
 def _square_poly(lat0, lon0, size_km, rot_deg=0.0):
-    """Quadrado size_km×size_km centrado em (lat0,lon0), rotacionado (N=0°, horário)."""
-    half_m = (size_km * 1000.0) / 2.0
-    pts = np.array([[-half_m, -half_m],
-                    [ half_m, -half_m],
-                    [ half_m,  half_m],
-                    [-half_m,  half_m],
-                    [-half_m, -half_m]], dtype=float)
-    theta = np.deg2rad(rot_deg)
-    Rz = np.array([[ np.sin(theta),  np.cos(theta)],   # ajuste p/ ref. Norte
-                   [ np.cos(theta), -np.sin(theta)]])
-    pts_rot = pts @ Rz.T
-    m_lat, m_lon = _meters_per_deg(lat0)
-    lats = lat0 + (pts_rot[:,1] / m_lat)
-    lons = lon0 + (pts_rot[:,0] / m_lon)
-    return list(map(lambda xy: [xy[0], xy[1]], zip(lats, lons)))
+    half_m = (size_km*1000.0)/2.0
+    pts = np.array([[-half_m,-half_m],[half_m,-half_m],[half_m,half_m],[-half_m,half_m],[-half_m,-half_m]], float)
+    th = np.deg2rad(rot_deg)
+    Rz = np.array([[ np.sin(th),  np.cos(th)],
+                   [ np.cos(th), -np.sin(th)]])
+    pts = pts @ Rz.T
+    mlat, mlon = _meters_per_deg(lat0)
+    lats = lat0 + (pts[:,1]/mlat); lons = lon0 + (pts[:,0]/mlon)
+    return [[lats[i], lons[i]] for i in range(len(lats))]
 
 def _bearing_deg(lat1, lon1, lat2, lon2):
     from math import atan2, radians, degrees, cos, sin
     φ1, φ2 = radians(lat1), radians(lat2)
-    Δλ = radians(lon2 - lon1)
-    x = sin(Δλ) * cos(φ2)
-    y = cos(φ1)*sin(φ2) - sin(φ1)*cos(φ2)*cos(Δλ)
-    return (degrees(atan2(x, y)) + 360.0) % 360.0
+    dλ = radians(lon2-lon1)
+    x = sin(dλ)*cos(φ2)
+    y = cos(φ1)*sin(φ2) - sin(φ1)*cos(φ2)*cos(dλ)
+    return (degrees(atan2(x,y))+360)%360
 
-def tle_heading_and_sense(tle_l1, tle_l2, t_utc):
-    """Retorna (heading_deg, is_ascending) no instante t_utc usando Skyfield."""
+def tle_heading_and_sense(l1, l2, t_utc):
     from skyfield.api import load, EarthSatellite
     ts = load.timescale()
-    sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
-    t0 = ts.utc(t_utc.year, t_utc.month, t_utc.day, t_utc.hour, t_utc.minute, t_utc.second - 1)
-    t1 = ts.utc(t_utc.year, t_utc.month, t_utc.day, t_utc.hour, t_utc.minute, t_utc.second + 1)
+    sat = EarthSatellite(l1.strip(), l2.strip(), "GHGSat", ts)
+    t0 = ts.utc(t_utc.year,t_utc.month,t_utc.day,t_utc.hour,t_utc.minute,t_utc.second-1)
+    t1 = ts.utc(t_utc.year,t_utc.month,t_utc.day,t_utc.hour,t_utc.minute,t_utc.second+1)
     sp0 = sat.at(t0).subpoint(); sp1 = sat.at(t1).subpoint()
     lat0, lon0 = sp0.latitude.degrees, sp0.longitude.degrees
     lat1, lon1 = sp1.latitude.degrees, sp1.longitude.degrees
-    heading = _bearing_deg(lat0, lon0, lat1, lon1)     # N=0°, horário
-    is_asc  = (lat1 > lat0)                            # subponto indo para norte?
+    heading = _bearing_deg(lat0,lon0,lat1,lon1)
+    is_asc = (lat1 > lat0)
     return heading, is_asc
 
-# ====== SELEÇÃO: mira arrastável + clique fallback + régua ======
+# ================== SELEÇÃO (mira/cliquer) ==================
 if ss.source is None or not ss.locked:
-    st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione/ARRASTE a mira e **clique em Save**. "
-            "Um **clique simples** no mapa também habilita o botão.")
+    st.info("🎯 No mapa, use o **marcador (alvo)**, posicione/ARRASTE e **clique em Save**. "
+            "Um **clique simples** no mapa também funciona.")
 
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
@@ -276,29 +258,22 @@ if ss.source is None or not ss.locked:
           iconSize: [20,20], iconAnchor: [10,10]
         });
       }
-      map.on('draw:created', function (e) {
-        if (e.layer && e.layer.dragging) e.layer.dragging.enable();
-      });
+      map.on('draw:created', function (e) { if (e.layer && e.layer.dragging) e.layer.dragging.enable(); });
       map.on('draw:editstart', function(){
         map.eachLayer(function(layer){
-          if (layer && layer.dragging && layer.getLatLng) { try { layer.dragging.enable(); } catch(_){} }
+          if (layer && layer.dragging && layer.getLatLng) { try { layer.dragging.enable(); } catch(_){ } }
         });
       });
     })();
     </script>"""
     m_sel.get_root().html.add_child(folium.Element(custom_js))
 
+    # Patch 3 — retorno sem last_active_drawing (mais estável)
     ret = st_folium(m_sel, height=560,
-                    returned_objects=["all_drawings","last_active_drawing","last_draw","last_clicked"],
+                    returned_objects=["all_drawings","last_draw","last_clicked"],
                     use_container_width=True)
 
     def _extract_point(ret_obj):
-        lad = ret_obj.get("last_active_drawing") if ret_obj else None
-        if lad:
-            try:
-                if lad["geometry"]["type"] == "Point":
-                    lon, lat = lad["geometry"]["coordinates"]; return float(lat), float(lon)
-            except Exception: pass
         drawings = ret_obj.get("all_drawings") if ret_obj else None
         if drawings:
             for feat in drawings[::-1]:
@@ -318,8 +293,10 @@ if ss.source is None or not ss.locked:
         return None
 
     new_pt = _extract_point(ret)
+    # Patch 2 — só salva quando realmente mudou
     if new_pt is not None:
-        ss.pending_click = new_pt
+        if ss.pending_click is None or tuple(np.round(ss.pending_click,7)) != tuple(np.round(new_pt,7)):
+            ss.pending_click = new_pt
 
     if ss.pending_click is not None:
         lat_p, lon_p = ss.pending_click
@@ -339,8 +316,8 @@ if ss.source is None or not ss.locked:
     if rm_btn and ss.pending_click is not None:
         ss.pending_click = None; st.info("Seleção limpa. Posicione a mira novamente.")
 
+# ================== MAPA FINAL ==================
 else:
-    # ====== SIMULAÇÃO / RENDER ======
     lat, lon = ss.source
     params = dict(wind_dir=wind_dir, wind_speed=wind_speed, stability=stability, is_urban=is_urban,
                   Q_gps=Q_gps, H=H_stack, d=d_stack, V=V_exit, Tamb=Tamb, Tstack=Tstack, u=wind_speed)
@@ -363,22 +340,22 @@ else:
     ).add_to(m1)
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
 
-    # ---- Footprint GHGSat 5x5 km orientado pelo TLE do arquivo ----
-    if tle_choice and ss.tle_cache:
-        try:
-            l1, l2 = ss.tle_cache[tle_choice]
-            t_utc = dt.datetime.combine(obs_date, obs_time).replace(tzinfo=dt.timezone.utc)
-            heading_deg, is_asc = tle_heading_and_sense(l1, l2, t_utc)  # N=0°, horário
-            label = "Ascendente" if is_asc else "Descendente"
-            poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading_deg)
-            folium.Polygon(locations=poly, color="#1f77b4", weight=2, fill=True, fill_opacity=0.10,
-                           tooltip=f"GHGSat Footprint 5×5 km — {tle_choice} — {label} @ {t_utc.isoformat()}"
-                           ).add_to(m1)
-            st.caption(f"🛰 {tle_choice} · heading {heading_deg:.1f}° · {label} (N=0°, horário) — TLE: {os.path.basename(tle_path)}")
-        except Exception as e:
-            st.warning(f"Não foi possível desenhar o footprint via TLE: {e}")
+    # Footprint orientado por TLE do arquivo
+    if ss.tle_cache and 'obs_date' in ss and 'obs_time' in ss:
+        tle_choice = st.sidebar.session_state.get('Satélite', None) or next(iter(ss.tle_cache.keys()), None)
+        if tle_choice:
+            try:
+                l1, l2 = ss.tle_cache[tle_choice]
+                t_utc = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
+                heading, is_asc = tle_heading_and_sense(l1, l2, t_utc)
+                label = "Ascendente" if is_asc else "Descendente"
+                poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading)
+                folium.Polygon(locations=poly, color="#1f77b4", weight=2, fill=True, fill_opacity=0.10,
+                               tooltip=f"GHGSat {tle_choice} • {label} • heading {heading:.1f}° @ {t_utc.isoformat()}"
+                               ).add_to(m1)
+                st.caption(f"🛰 {tle_choice} · heading {heading:.1f}° (N=0°, horário) · {label}")
+            except Exception as e:
+                st.warning(f"Footprint via TLE falhou: {e}")
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, use_container_width=True)
-
-
