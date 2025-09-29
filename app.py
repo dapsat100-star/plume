@@ -15,7 +15,8 @@ try:
 except Exception:
     Geocoder = None
 from streamlit_folium import st_folium
-
+from PIL import Image
+import matplotlib
 # Requisições HTTP (para logo via URL/GitHub raw)
 try:
     import requests
@@ -105,7 +106,10 @@ if "obs_date" not in ss or "obs_time" not in ss:
 def _geocoder():
     return Nominatim(user_agent="plume_streamlit_app")
 
-@st.cache_data(show_spinner=False, ttl=er()
+@st.cache_data(show_spinner=False, ttl=3600)
+def reverse_geocode(lat, lon):
+    try:
+        g = _geocoder()
         loc = g.reverse((lat, lon), language="pt", zoom=18, exactly_one=True, timeout=5)
         return loc.address if loc else None
     except Exception:
@@ -113,7 +117,9 @@ def _geocoder():
 
 # Baixar logo por URL (ex.: GitHub raw)
 @st.cache_data(show_spinner=False, ttl=3600)
-def fef not url:
+def fetch_logo_url(url: str) -> bytes | None:
+    try:
+        if not url:
             return None
         if requests is None:
             return None
@@ -295,7 +301,18 @@ with st.sidebar:
     # 🎨 Marca (uploader/path e tamanho)
     with st.expander("🎨 Marca (logo no topo)", expanded=False):
         up = st.file_uploader("Logo MAVIPE (PNG/JPG)", type=["png","jpg","jpeg"], key="logo_upl")
-    URL. Verifique o link raw e permissões.")
+        logo_path = st.text_input("Ou caminho do logo local", value="images/logomavipe.jpeg", key="logo_path")
+        logo_url = st.text_input("Ou URL do logo (GitHub raw)", value="", key="logo_url",
+                                 help="Ex.: https://raw.githubusercontent.com/usuario/repositorio/branch/images/logomavipe.png")
+        st.slider("Largura do logo (px)", 80, 320, int(ss.get("logo_w", 140)), 2, key="logo_w")
+        if up is not None:
+            ss.logo_bytes = up.read()
+        elif logo_url:
+            data = fetch_logo_url(logo_url)
+            if data:
+                ss.logo_bytes = data
+            else:
+                st.warning('Não foi possível baixar o logo pela URL. Verifique o link raw e permissões.')
         elif logo_path:
             try:
                 if os.path.exists(logo_path):
