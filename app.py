@@ -324,14 +324,7 @@ with st.sidebar:
         ad_hours = 0   # deixa o algoritmo expandir sozinho (72→120→168→240 h)
         sep_deg = 160  # separação mínima entre headings (quase opostos)
 
-        # Par visual: buscar próximo par com direção diferente (ASC & DESC)
-        st.caption("Footprints visuais: busca um par de direções reais (ASC & DESC) à frente a partir do horário.")
-        ad_hours = st.slider("Limite de busca à frente (horas)", 12, 168, 72, 6,
-                             help="Se não encontrar o par dentro do limite, nada é desenhado.")
-
-        # Mostrar ambos os exemplos (ASC & DESC)
-        show_ad_examples = st.checkbox(
-            "Mostrar exemplos Ascendente & Descendente (±90 min)",
+        # (sem controles) — busca automática do par ASC/DESC à frente",
             value=True,
             help="Procura o primeiro caso ascendente e o primeiro descendente em ±90 min do horário acima.",
         )
@@ -941,11 +934,28 @@ else:
                 fg2.add_to(m1)
                 st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}")
 
-            if 'first' not in pair and 'opposite' not in pair:
-                st.warning('Não foi possível encontrar um par (ASC/DESC) dentro do limite definido.')
+            if 'first' in pair and 'opposite' not in pair:
+                # desenha orientação oposta sintética (+180°) para garantir as duas órbitas
+                h2 = (h1 + 180.0) % 360.0
+                asc2 = not asc1
+                label2 = 'Ascendente' if asc2 else 'Descendente'
+                color2 = '#00c853' if asc2 else '#ff6d00'
+                name2 = ('ASC' if asc2 else 'DESC') + f" (visual, {sat_name})"
+                fg2 = folium.FeatureGroup(name=name2, show=True)
+                poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
+                folium.Polygon(
+                    locations=poly2,
+                    color=color2, weight=4, opacity=1.0,
+                    fill=True, fill_color=color2, fill_opacity=0.10,
+                    tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° (oposto sintético)"
+                ).add_to(fg2)
+                add_heading_arrow(fg2, lat, lon, h2, color=color2)
+                fg2.add_to(m1)
+                st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (oposto sintético)") dentro do limite definido.')
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
     add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
+
