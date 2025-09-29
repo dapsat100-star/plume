@@ -1,4 +1,4 @@
-# app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE de arquivo) — clique simples + anti-rerun
+  # app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE de arquivo) — clique simples + anti-rerun
 # -*- coding: utf-8 -*-
 import io, base64, os
 import numpy as np
@@ -29,13 +29,17 @@ import datetime as dt
 st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint (TLE do arquivo)", layout="wide")
 st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSat 5×5 km (via TLE)")
 # Logo no topo (fixo)
-if ss.get("logo_bytes"):
-    _logo_b64 = base64.b64encode(ss.logo_bytes).decode("utf-8")
-    _w = int(ss.get("logo_w", 140))
-    st.markdown(
-        f"<div class='branding-fixed'><img src='data:image/png;base64,{_logo_b64}' style='width:{_w}px;'/></div>",
-        unsafe_allow_html=True,
-    )
+try:
+    _ss = st.session_state
+    if _ss.get("logo_bytes"):
+        _logo_b64 = base64.b64encode(_ss["logo_bytes"]).decode("utf-8")
+        _w = int(_ss.get("logo_w", 140))
+        st.markdown(
+            f"<div class='branding-fixed'><img src='data:image/png;base64,{_logo_b64}' style='width:{_w}px;'/></div>",
+            unsafe_allow_html=True,
+        )
+except Exception:
+    pass
 st.markdown(
     """
 <style>
