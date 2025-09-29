@@ -26,8 +26,30 @@ st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSa
 st.markdown(
     """
 <style>
+/* Sidebar layout */
 [data-testid="stSidebar"] { overflow-y: auto; max-height: 100vh; }
 .stButton>button { height: 40px; }
+
+/* ⬆️ Aumentar fonte dos campos de BUSCA (sidebar) */
+[data-testid="stSidebar"] .stTextInput input {
+  font-size: 1.15rem !important;   /* ~18px */
+  height: 48px !important;
+}
+[data-testid="stSidebar"] .stTextInput input::placeholder {
+  font-size: 1.05rem !important;
+  opacity: 0.85;
+}
+
+/* ⬆️ Aumentar fonte do Geocoder no mapa (Leaflet) */
+.leaflet-control-geocoder,
+.leaflet-control-geocoder * {
+  font-size: 1.05rem !important;   /* ~16-17px */
+}
+.leaflet-control-geocoder-form input {
+  font-size: 1.05rem !important;
+  height: 34px !important;
+  padding: 6px 10px !important;
+}
 </style>
 """,
     unsafe_allow_html=True,
