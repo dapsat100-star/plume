@@ -35,7 +35,7 @@ ss.setdefault("locked", False)
 ss.setdefault("tle_cache", {})
 ss.setdefault("tle_path_loaded", "")
 
-# Patch 1 — defaults ESTÁVEIS para data/hora (evita loop com utcnow)
+# defaults ESTÁVEIS para data/hora (evita loop com utcnow)
 if "obs_date" not in ss or "obs_time" not in ss:
     _now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc, microsecond=0)
     ss.obs_date = _now.date()
@@ -115,7 +115,6 @@ with st.sidebar:
         else:
             tle_choice = st.selectbox("Satélite", list(ss.tle_cache.keys()))
 
-        # Patch 1 aplicado: usa estado
         obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
         obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
 
@@ -126,10 +125,9 @@ with st.sidebar:
     if c2.button("Selecionar outro ponto", use_container_width=True):
         ss.source = None; ss.overlay = None; ss.locked = False; ss.pending_click = None
 
-# ================== CONVERSÃO ==================
-Q_gps = (float( st.session_state.get('Q_kgph', 0) or 0) * 1000.0) / 3600.0  # só pra evitar NameError
-Q_gps = (float(st.sidebar.session_state.get('Taxa de emissão Q (kg CH₄/h)', 100.0)) * 1000.0) / 3600.0 \
-    if 'Taxa de emissão Q (kg CH₄/h)' in st.sidebar.session_state else (float(100.0)*1000.0)/3600.0
+# ================== CONVERSÃO (patch correto) ==================
+# kg/h -> g/s usando *diretamente* o valor do widget Q_kgph
+Q_gps = (float(Q_kgph) * 1000.0) / 3600.0
 
 # ================== MODELO PLUMA ==================
 def sigma_yz(x_m, stability, is_urban=False):
@@ -268,7 +266,7 @@ if ss.source is None or not ss.locked:
     </script>"""
     m_sel.get_root().html.add_child(folium.Element(custom_js))
 
-    # Patch 3 — retorno sem last_active_drawing (mais estável)
+    # retorno estável (sem last_active_drawing)
     ret = st_folium(m_sel, height=560,
                     returned_objects=["all_drawings","last_draw","last_clicked"],
                     use_container_width=True)
@@ -293,7 +291,7 @@ if ss.source is None or not ss.locked:
         return None
 
     new_pt = _extract_point(ret)
-    # Patch 2 — só salva quando realmente mudou
+    # só salva quando realmente mudou
     if new_pt is not None:
         if ss.pending_click is None or tuple(np.round(ss.pending_click,7)) != tuple(np.round(new_pt,7)):
             ss.pending_click = new_pt
@@ -342,7 +340,14 @@ else:
 
     # Footprint orientado por TLE do arquivo
     if ss.tle_cache and 'obs_date' in ss and 'obs_time' in ss:
-        tle_choice = st.sidebar.session_state.get('Satélite', None) or next(iter(ss.tle_cache.keys()), None)
+        # a seleção do satélite está no sidebar; recupera com segurança
+        tle_choice = None
+        for key in st.sidebar.session_state.keys():
+            if key.endswith("Satélite"):
+                tle_choice = st.sidebar.session_state[key]
+                break
+        if tle_choice is None and ss.tle_cache:
+            tle_choice = next(iter(ss.tle_cache.keys()))
         if tle_choice:
             try:
                 l1, l2 = ss.tle_cache[tle_choice]
