@@ -877,7 +877,8 @@ else:
                 st.caption(f"🛰 {sat_name} • {label2} (TLE) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}")
 
             if 'first' in pair and 'opposite' not in pair:
-                st.warning(f"Não foi possível encontrar a órbita oposta REAL dentro de {used_h} h a partir do horário. Tente ajustar a data/hora ou confirmar o TLE.")")
+                st.warning(f"Não foi possível encontrar a órbita oposta REAL dentro de {used_h} h a partir do horário. Tente ajustar a data/hora ou confirmar o TLE.")
+
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
