@@ -17,6 +17,11 @@ except Exception:
 from streamlit_folium import st_folium
 from PIL import Image
 import matplotlib
+# CSS dentro do iframe do Folium
+try:
+    from branca.element import Element
+except Exception:
+    Element = None
 # Requisições HTTP (para logo via URL/GitHub raw)
 try:
     import requests
@@ -429,6 +434,39 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
+# ---- CSS no iframe do Folium (Geocoder maior) ----
+def _inject_geocoder_css(m, font_px: int = 20, result_px: int = 18, width_px: int = 520, input_h: int = 52):
+    """Injeta CSS diretamente no HTML do mapa (iframe) para ampliar o Geocoder."""
+    try:
+        if Element is None:
+            return
+        css = f"""
+        <style>
+        .leaflet-control-geocoder, .leaflet-control-geocoder * {{
+          font-size: {font_px}px !important;
+        }}
+        .leaflet-control-geocoder-form input {{
+          font-size: {font_px}px !important;
+          height: {input_h}px !important;
+          padding: 10px 14px !important;
+          width: {width_px}px !important;
+        }}
+        .leaflet-control-geocoder-expanded {{
+          width: {width_px + 40}px !important;
+        }}
+        .leaflet-control-geocoder-alternatives {{
+          font-size: {result_px}px !important;
+        }}
+        .leaflet-control-geocoder-alternatives li a {{
+          line-height: 1.4 !important;
+          padding: 8px 10px !important;
+        }}
+        </style>
+        """
+        m.get_root().html.add_child(Element(css))
+    except Exception:
+        pass
+
 # ================== TLE / FOOTPRINT ==================
 def _meters_per_deg(lat_deg: float):
     R = 6371000.0
@@ -490,6 +528,8 @@ if ss.source is None or not ss.locked:
     if Geocoder:
         Geocoder(collapsed=False, add_marker=True, position='topleft',
                  placeholder='Buscar lugar…').add_to(m_sel)
+    # CSS maior dentro do mapa (iframe)
+    _inject_geocoder_css(m_sel, font_px=22, result_px=20, width_px=560, input_h=56)
 
     if ScaleBar: ScaleBar(position="bottomleft", imperial=False).add_to(m_sel)
     m_sel.add_child(MeasureControl(primary_length_unit='meters',
@@ -596,6 +636,8 @@ else:
     if Geocoder:
         Geocoder(collapsed=False, add_marker=True, position='topleft',
                  placeholder='Buscar lugar…').add_to(m1)
+    # CSS maior dentro do mapa (iframe)
+    _inject_geocoder_css(m1, font_px=22, result_px=20, width_px=560, input_h=56)
     if ScaleBar: ScaleBar(position="bottomleft", imperial=False).add_to(m1)
     m1.add_child(MeasureControl(primary_length_unit='meters',
                                 secondary_length_unit='kilometers', position='topleft'))
@@ -625,3 +667,4 @@ else:
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
+
