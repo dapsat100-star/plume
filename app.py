@@ -1,4 +1,4 @@
-# app.py — mira arrastável (Leaflet.draw) + confirmação + reverse geocode + pluma ppb
+# app.py — mira arrastável + botão Confirmar sempre visível + reverse geocode + pluma ppb
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -150,21 +150,21 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     else:
         A = A_ppb
         vmin_, vmax_ = vmin, vmax
-    N = np.clip((A - vmin_) / (vmax - vmin + 1e-12), 0, 1)
+    N = np.clip((A - vmin_) / (vmax_ - vmin_ + 1e-12), 0, 1)
     idx = (N*255).astype(np.uint8)
     alpha = (np.sqrt(N)*255).astype(np.uint8); alpha[N<=0.003]=0
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ============ SELEÇÃO COM MIRA ARRASTÁVEL ============
+# ============ SELEÇÃO COM MIRA ARRASTÁVEL (robusta; botão sempre visível) ============
 if ss.source is None or not ss.locked:
-    st.info("🎯 Clique no botão de marcador (alvo) na barra do mapa, coloque a MIRA “＋”, ARRASTE para ajustar e depois confirme.")
+    st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione a MIRA “＋”, ARRASTE para ajustar e depois confirme.")
 
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
     folium.TileLayer("OpenStreetMap").add_to(m_sel)
 
-    # toolbar (só Marker) + edição/remoção habilitadas
+    # Toolbar: só Marker; edição/remoção habilitadas
     Draw(
         draw_options={
             "polyline": False, "polygon": False, "circle": False,
@@ -174,7 +174,7 @@ if ss.source is None or not ss.locked:
         edit_options={"edit": True, "remove": True}
     ).add_to(m_sel)
 
-    # Troca o ícone padrão do marcador por uma "mira" (DivIcon) e habilita arrastar
+    # Define ícone "mira" (DivIcon) e garante arrastar
     custom_js = """
     <script>
     (function(){
@@ -183,6 +183,7 @@ if ss.source is None or not ss.locked:
         return window[k];
       })();
       if (!map) return;
+
       if (L && L.Draw && L.Draw.Marker) {
         L.Draw.Marker.prototype.options.icon = L.divIcon({
           className: 'crosshair-marker',
@@ -204,42 +205,65 @@ if ss.source is None or not ss.locked:
     """
     m_sel.get_root().html.add_child(folium.Element(custom_js))
 
+    # Render do mapa e captura
     ret = st_folium(
         m_sel,
         height=620,
-        returned_objects=["all_drawings"],
+        returned_objects=["all_drawings", "last_draw"],
         use_container_width=True
     )
 
-    # Pega a última Feature Point desenhada/arrastada
-    lat_p = lon_p = None
-    if ret and ret.get("all_drawings"):
-        drawings = ret["all_drawings"]
-        for feat in drawings[::-1]:
+    # Extrai (lat, lon) da mira — tenta all_drawings e last_draw
+    def _extract_point(ret_obj):
+        drawings = ret_obj.get("all_drawings") if ret_obj else None
+        if drawings:
+            for feat in drawings[::-1]:
+                try:
+                    if feat and feat["geometry"]["type"] == "Point":
+                        lon, lat = feat["geometry"]["coordinates"]  # GeoJSON: [lon, lat]
+                        return float(lat), float(lon)
+                except Exception:
+                    pass
+        last_draw = ret_obj.get("last_draw") if ret_obj else None
+        if last_draw:
             try:
-                if feat and feat["geometry"]["type"] == "Point":
-                    lon_p, lat_p = feat["geometry"]["coordinates"]  # GeoJSON: [lon, lat]
-                    break
+                if last_draw["geometry"]["type"] == "Point":
+                    lon, lat = last_draw["geometry"]["coordinates"]
+                    return float(lat), float(lon)
             except Exception:
                 pass
+        return None
 
-    if lat_p is not None and lon_p is not None:
-        ss.pending_click = (lat_p, lon_p)
+    new_pt = _extract_point(ret)
+    if new_pt is not None:
+        ss.pending_click = new_pt
+
+    # Painel SEMPRE visível; Confirmar habilita só quando há ponto válido
+    lat_p = lon_p = None
+    if ss.pending_click is not None:
+        lat_p, lon_p = ss.pending_click
         addr = reverse_geocode(lat_p, lon_p)
         st.markdown(
             f"📍 **Mira:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
             unsafe_allow_html=True
         )
-        c_ok, c_rm = st.columns(2)
-        if c_ok.button("✅ Confirmar este ponto", use_container_width=True):
-            ss.source = ss.pending_click
-            ss.locked = True
-            ss._update = True
-            ss.pending_click = None
-            st.success("Fonte confirmada. Gerando pluma…")
-        if c_rm.button("🗑 Remover mira e refazer", use_container_width=True):
-            ss.pending_click = None
-            st.info("Clique no botão de marcador e posicione a mira novamente.")
+    else:
+        st.caption("Posicione a mira e/ou arraste antes de confirmar.")
+
+    col_ok, col_rm = st.columns(2)
+    col_ok_btn = col_ok.button("✅ Confirmar este ponto", use_container_width=True, disabled=(ss.pending_click is None))
+    col_rm_btn = col_rm.button("🗑 Remover mira e refazer", use_container_width=True, disabled=(ss.pending_click is None))
+
+    if col_ok_btn and ss.pending_click is not None:
+        ss.source = ss.pending_click
+        ss.locked = True
+        ss._update = True
+        ss.pending_click = None
+        st.success("Fonte confirmada. Gerando pluma…")
+
+    if col_rm_btn and ss.pending_click is not None:
+        ss.pending_click = None
+        st.info("Clique no botão de marcador (alvo) e posicione a mira novamente.")
 
 else:
     # ====== SIMULAÇÃO / RENDER ======
