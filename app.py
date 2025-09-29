@@ -1,4 +1,4 @@
-# app.py — ppb, 25 m/pixel, legenda fixa (Edge-safe), Q em kg/h
+# app.py — seleção sensível com confirmação, auto-zoom, reverse geocode, entrada manual
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -7,30 +7,49 @@ import folium
 from streamlit_folium import st_folium
 from PIL import Image
 from matplotlib import cm
+from geopy.geocoders import Nominatim
 
-# -------- Config --------
+# ---------------- Config ----------------
 st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel, kg/h)", layout="wide")
-st.title("Pluma Gaussiana — ABSOLUTA (ppb), 25 m/pixel, emissão em kg CH₄/h")
+st.title("Pluma Gaussiana — 25 m/pixel · emissão em kg CH₄/h · ppb 0–450")
 
-# Sidebar scroll CSS
 st.markdown("""
 <style>
+/* Sidebar sempre rolável */
 [data-testid="stSidebar"] { overflow-y: auto; max-height: 100vh; }
+/* Deixa botões mais “clicáveis” em mobile */
+.stButton>button { height: 40px; }
 </style>
 """, unsafe_allow_html=True)
 
-# -------- Estado --------
+# ---------------- Estado ----------------
 ss = st.session_state
-ss.setdefault("source", None)
+ss.setdefault("source", None)         # (lat, lon) confirmado
+ss.setdefault("pending_click", None)  # (lat, lon) proposto
 ss.setdefault("overlay", None)
 ss.setdefault("_update", False)
 ss.setdefault("locked", False)
 
-# -------- Constantes --------
-PX_PER_KM_FIXED = 40     # 25 m/pixel
+# ---------------- Constantes ----------------
+PX_PER_KM_FIXED = 40        # 25 m/pixel
 V_ABS_MIN, V_ABS_MAX = 0.0, 450.0  # ppb
 
-# -------- Sidebar --------
+# ---------------- Geocoding (com cache) ----------------
+@st.cache_resource
+def _geocoder():
+    # user_agent obrigatório para Nominatim
+    return Nominatim(user_agent="plume_streamlit_app")
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def reverse_geocode(lat, lon):
+    try:
+        g = _geocoder()
+        loc = g.reverse((lat, lon), language="pt", zoom=18, exactly_one=True, timeout=5)
+        return loc.address if loc else None
+    except Exception:
+        return None
+
+# ---------------- Sidebar ----------------
 with st.sidebar:
     st.header("Parâmetros")
 
@@ -50,26 +69,22 @@ with st.sidebar:
         Tstack   = st.number_input("Temp. dos gases (K)", 230.0, 500.0, 320.0, 0.5)
 
     with st.expander("🖼 Renderização", expanded=True):
-        st.markdown("**Resolução espacial:** `25 m/pixel` (fixa)")
+        st.markdown("**Resolução:** `25 m/pixel` (fixa)")
         opacity    = st.slider("Opacidade do overlay", 0.0, 1.0, 0.90, 0.01)
         scale_mode = st.selectbox("Escala de cores", ["Absoluta (linear)", "Absoluta (log10)"], index=0)
-        st.caption("Legenda fixa: 0 · 150 · 300 · 450 ppb")
+        st.caption("Faixa absoluta fixa: **0 · 150 · 300 · 450 ppb**")
 
     st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("Atualizar", type="primary", use_container_width=True):
+    c1, c2 = st.columns(2)
+    if c1.button("Atualizar pluma", type="primary", use_container_width=True):
         ss._update = True
-    if c2.button("Selecionar novo ponto", use_container_width=True):
-        ss.source = None; ss.overlay = None; ss.locked = False
-    if c3.button("Overlay de teste", use_container_width=True):
-        if ss.source is None:
-            ss.source = (-22.9035, -43.2096); ss.locked = True
-        ss._update = True
+    if c2.button("Selecionar outro ponto", use_container_width=True):
+        ss.source = None; ss.overlay = None; ss.locked = False; ss.pending_click = None
 
-# -------- Conversão segura kg/h -> g/s --------
+# ---------------- Conversão kg/h -> g/s ----------------
 Q_gps = (float(Q_kgph) * 1000.0) / 3600.0  # kg/h -> g/s
 
-# -------- Modelo --------
+# ---------------- Modelo ----------------
 def sigma_yz(x_m, stability, is_urban=False):
     x_km = np.maximum(x_m/1000.0, 1e-6)
     s = stability.upper()
@@ -94,8 +109,8 @@ def effective_height(H, V, d, Tamb, Tstack, u):
     return H + max(delta_m, delta_b, 0.0)
 
 def compute_conc(lat, lon, p):
-    extent_km = 2.0
-    px_per_km = PX_PER_KM_FIXED
+    extent_km = 2.0                 # ~1 km de raio
+    px_per_km = PX_PER_KM_FIXED     # 25 m/pixel
     R_earth = 6371000.0
     lat_rad = np.deg2rad(lat)
     m_lat = np.pi*R_earth/180
@@ -123,9 +138,8 @@ def compute_conc(lat, lon, p):
     bounds = [[lat - dlat, lon - dlon], [lat + dlat, lon + dlon]]
     return C, bounds
 
-# ---- conversão segura g/m³ -> ppb ----
 def to_ppb_safe(C_val, pres_hPa, temp_K):
-    # (gás ideal) — self-contained para evitar NameError por codificação/escopo
+    # g/m³ -> ppb (gás ideal) — self-contained para evitar NameError por escopo/codificação
     R_local = 8.314462618   # J/mol/K
     M_CH4_local = 16.043    # g/mol
     P_pa = float(pres_hPa) * 100.0
@@ -145,41 +159,58 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ---- Legenda fixa (Edge-safe) ----
-def add_legend_fixed_right_ppb(m):
-    """Legenda fixa à direita (Edge-safe): [ppb] com 0/150/300/450."""
-    html = """
-    <style>
-      .ppb-legend { position:absolute; top:80px; right:10px; width:36px; height:340px; z-index:10000; pointer-events:none; }
-      .ppb-legend .bar { position:absolute; right:8px; top:10px; width:16px; height:300px; border-radius:6px; box-shadow:0 0 6px rgba(0,0,0,0.3);
-                         background: linear-gradient(to top, purple, blue, cyan, green, yellow, red); }
-      .ppb-legend .hdr { position:absolute; right:4px; top:-6px; font-size:12px; font-weight:600; background:rgba(255,255,255,0.85); padding:1px 4px; border-radius:4px; }
-      .ppb-legend .t0   { position:absolute; right:30px; top:310px; font-size:12px; }
-      .ppb-legend .t150 { position:absolute; right:30px; top:210px; font-size:12px; }
-      .ppb-legend .t300 { position:absolute; right:30px; top:110px; font-size:12px; }
-      .ppb-legend .t450 { position:absolute; right:30px; top:10px;  font-size:12px; }
-    </style>
-    <div class="ppb-legend">
-      <div class="bar"></div>
-      <div class="hdr">[ppb]</div>
-      <div class="t0">0</div>
-      <div class="t150">150</div>
-      <div class="t300">300</div>
-      <div class="t450">450</div>
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(html))
+# ---------------- Fluxo ----------------
+with st.expander("➕ Selecionar ponto manualmente (lat/lon)", expanded=False):
+    c_lat, c_lon = st.columns(2)
+    lat_in = c_lat.number_input("Latitude", -90.0, 90.0, 0.0, 0.000001, format="%.6f")
+    lon_in = c_lon.number_input("Longitude", -180.0, 180.0, 0.0, 0.000001, format="%.6f")
+    if st.button("Usar coordenadas digitadas"):
+        ss.pending_click = (float(lat_in), float(lon_in))
 
-# -------- Fluxo --------
 if ss.source is None or not ss.locked:
-    st.info("Clique no mapa para definir a fonte (vista travada ~1 km).")
-    m0 = folium.Map(location=[-22.9035, -43.2096], zoom_start=15, control_scale=True)
-    r = st_folium(m0, height=720, returned_objects=["last_clicked"], use_container_width=True)
-    if r and r.get("last_clicked"):
-        ss.source = (r["last_clicked"]["lat"], r["last_clicked"]["lng"])
-        ss.locked = True
-        ss._update = True
+    st.info("Clique no mapa para **propor** um ponto (ou digite lat/lon). Depois confirme.")
+
+    # Se já temos clique pendente, centraliza e dá zoom no ponto (↑ sensível)
+    if ss.pending_click is not None:
+        cen = ss.pending_click; zoom = 17
+    else:
+        cen = (-22.9035, -43.2096); zoom = 15
+
+    m_sel = folium.Map(location=cen, zoom_start=zoom, control_scale=True)
+
+    # Marcador provisório se houver ponto pendente
+    if ss.pending_click is not None:
+        lat_p, lon_p = ss.pending_click
+        folium.CircleMarker([lat_p, lon_p], radius=7, color="#0066ff",
+                            fill=True, fill_opacity=0.9,
+                            tooltip="Ponto provisório").add_to(m_sel)
+
+    ret = st_folium(m_sel, height=600, returned_objects=["last_clicked"], use_container_width=True)
+
+    # Qualquer clique substitui o ponto provisório e re-centra no próximo render
+    if ret and ret.get("last_clicked"):
+        ss.pending_click = (ret["last_clicked"]["lat"], ret["last_clicked"]["lng"])
+
+    # Painel de confirmação quando há ponto pendente
+    if ss.pending_click is not None:
+        lat_p, lon_p = ss.pending_click
+        addr = reverse_geocode(lat_p, lon_p)  # geopy + Nominatim (com cache)
+        st.markdown(
+            f"📍 **Ponto proposto:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
+            unsafe_allow_html=True
+        )
+        c_ok, c_cancel = st.columns(2)
+        if c_ok.button("✅ Confirmar este ponto", use_container_width=True):
+            ss.source = ss.pending_click
+            ss.locked = True
+            ss._update = True
+            ss.pending_click = None
+            st.success("Fonte confirmada. Gerando pluma…")
+        if c_cancel.button("↩️ Cancelar / escolher outro", use_container_width=True):
+            ss.pending_click = None
+            st.info("Clique novamente no mapa ou digite outras coordenadas.")
 else:
+    # ====== Simulação/render ======
     lat, lon = ss.source
     params = dict(
         wind_dir=wind_dir, wind_speed=wind_speed, stability=stability, is_urban=is_urban,
@@ -188,7 +219,7 @@ else:
 
     if ss._update or ss.overlay is None:
         C, bounds = compute_conc(lat, lon, params)
-        C_ppb = to_ppb_safe(C, P_hPa, Tamb)  # << conversão sem NameError
+        C_ppb = to_ppb_safe(C, P_hPa, Tamb)
         rgba = render_ppb(C_ppb, V_ABS_MIN, V_ABS_MAX, log=(scale_mode == "Absoluta (log10)"))
         im = Image.fromarray(rgba, "RGBA")
         bio = io.BytesIO(); im.save(bio, "PNG"); bio.seek(0)
@@ -202,6 +233,5 @@ else:
         bounds=bounds, opacity=opacity, name="Pluma").add_to(m1)
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
 
-    add_legend_fixed_right_ppb(m1)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, use_container_width=True)
