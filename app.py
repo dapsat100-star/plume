@@ -1,4 +1,4 @@
-  # app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE de arquivo) — clique simples + anti-rerun
+# app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE de arquivo) — clique simples + anti-rerun
 # -*- coding: utf-8 -*-
 import io, base64, os
 import numpy as np
@@ -28,18 +28,7 @@ import datetime as dt
 # ================== CONFIG ==================
 st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint (TLE do arquivo)", layout="wide")
 st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSat 5×5 km (via TLE)")
-# Logo no topo (fixo)
-try:
-    _ss = st.session_state
-    if _ss.get("logo_bytes"):
-        _logo_b64 = base64.b64encode(_ss["logo_bytes"]).decode("utf-8")
-        _w = int(_ss.get("logo_w", 140))
-        st.markdown(
-            f"<div class='branding-fixed'><img src='data:image/png;base64,{_logo_b64}' style='width:{_w}px;'/></div>",
-            unsafe_allow_html=True,
-        )
-except Exception:
-    pass
+
 st.markdown(
     """
 <style>
@@ -97,6 +86,15 @@ ss.setdefault("tle_path_loaded", "")
 ss.setdefault("search_results", [])
 ss.setdefault("logo_bytes", None)
 ss.setdefault("logo_w", 140)
+
+# Tenta pré-carregar logo padrão do repo, se existir
+DEFAULT_LOGO_PATH = "images/logomavipe.jpeg"
+if ss.get("logo_bytes") is None and os.path.exists(DEFAULT_LOGO_PATH):
+    try:
+        with open(DEFAULT_LOGO_PATH, "rb") as _f:
+            ss.logo_bytes = _f.read()
+    except Exception:
+        pass
 # NÃO defina/atribua ss["tle_choice"] depois que o widget com key="tle_choice" existir
 
 # defaults ESTÁVEIS para data/hora (evita loop com utcnow)
@@ -212,6 +210,18 @@ FOOTPRINT_SIZE_KM = 5.0         # 5×5 km
 
 # ================== SIDEBAR ==================
 with st.sidebar:
+    # Logo no topo da sidebar (canto superior esquerdo)
+    try:
+        if ss.get("logo_bytes"):
+            _b64 = base64.b64encode(ss.logo_bytes).decode("utf-8")
+            _w = int(ss.get("logo_w", 140))
+            st.markdown(
+                f"<img src='data:image/png;base64,{_b64}' style='width:{_w}px; margin:6px 0 12px 6px;' />",
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        pass
+
     st.header("Parâmetros")
 
     with st.expander("🌦 Meteorologia", expanded=True):
