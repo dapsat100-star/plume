@@ -585,6 +585,33 @@ def find_next_direction_pair(tle_l1, tle_l2, start_dt, max_hours: int = 72, step
         t += dt.timedelta(seconds=step_s)
     return out
 
+# --- legenda ASC/DESC ---
+def add_ad_legend(m, font_px: int = 18):
+    """Adiciona legenda fixa (ASC verde, DESC laranja) dentro do iframe do mapa."""
+    try:
+        if Element is None:
+            return
+        html = f"""
+        <div id="legend-ad" style="
+          position: fixed; bottom: 16px; right: 16px; z-index: 1000;
+          background: rgba(0,0,0,0.65); color: #fff; padding: 8px 12px;
+          border-radius: 10px; font-size: {font_px}px; line-height: 1.3;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+        ">
+          <div style="display:flex; align-items:center; gap:8px; margin:2px 0;">
+            <span style="display:inline-block; width:14px; height:14px; background:#00c853; border:2px solid #00c853;"></span>
+            <span>Órbita ascendente</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin:2px 0;">
+            <span style="display:inline-block; width:14px; height:14px; background:#ff6d00; border:2px solid #ff6d00;"></span>
+            <span>Órbita descendente</span>
+          </div>
+        </div>
+        """
+        m.get_root().html.add_child(Element(html))
+    except Exception:
+        pass
+
 # ================== TLE / FOOTPRINT ==================
 def _meters_per_deg(lat_deg: float):
     R = 6371000.0
@@ -860,5 +887,7 @@ else:
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
+    add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
+
