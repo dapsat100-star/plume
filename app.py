@@ -486,7 +486,7 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     a = sin(dφ/2)**2 + cos(φ1)*cos(φ2)*sin(dλ/2)**2
     return 2*R*asin(min(1, sqrt(a)))
 
-# --- busca simples (visual): próximo ASC e próximo DESC à frente ---
+# --- busca simples (TLE): próximo ASC e próximo DESC à frente ---
 def _bearing_deg(lat1, lon1, lat2, lon2):
     from math import atan2, radians, degrees, cos, sin
     φ1, φ2 = radians(lat1), radians(lat2)
@@ -554,18 +554,33 @@ def _ang_sep(a_deg: float, b_deg: float) -> float:
 
 # wrapper: expande janela automaticamente até achar o oposto (até ~10 dias)
 def find_dir_pair_auto(sat, ts, start_dt, base_hours: int = 72, min_sep_deg: int = 160):
+    """Expande automaticamente a janela à frente até encontrar um par ASC/DESC real.
+    Agora varre até ~30 dias (720 h) se necessário.
+    """
     hours_list = []
     if base_hours and base_hours > 0:
         hours_list.append(int(base_hours))
-    hours_list += [72, 120, 168, 240]
+    # Escalonamento progressivo (dias): 3, 5, 7, 10, 14, 20, 30
+    hours_list += [72, 120, 168, 240, 336, 480, 720]
+
+    # normaliza ordem e remove duplicados
     seen = set(); ordered = []
     for h in hours_list:
         if h in seen:
             continue
         seen.add(h); ordered.append(h)
+
     last_pair = {}
     for h in ordered:
-        step = 60 if h <= 72 else 120
+        # passo adaptativo p/ performance
+        if h <= 72:
+            step = 60   # 1 min
+        elif h <= 240:
+            step = 120  # 2 min
+        elif h <= 720:
+            step = 300  # 5 min
+        else:
+            step = 600  # 10 min (fallback extra)
         pair = find_next_direction_pair_vec(sat, ts, start_dt, max_hours=h, step_s=step, min_sep_deg=min_sep_deg)
         if 'opposite' in pair:
             return pair, h
@@ -823,7 +838,7 @@ else:
             l1, l2 = ss.tle_cache[sat_name]
             t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
 
-            # Sempre mostrar dois footprints (visual): primeiro instante e o primeiro com direção oposta
+            # Sempre mostrar dois footprints (TLE): primeiro instante e o primeiro com direção oposta
             ts_obj, sat_obj = get_sat_cached(sat_name, l1, l2)
             pair, used_h = find_dir_pair_auto(sat_obj, ts_obj, t_center, base_hours=72, min_sep_deg=160)
 
@@ -831,57 +846,38 @@ else:
                 h1, t1, asc1 = pair['first']
                 label1 = 'Ascendente' if asc1 else 'Descendente'
                 color1 = '#00c853' if asc1 else '#ff6d00'
-                name1 = ('ASC' if asc1 else 'DESC') + f" (visual, {sat_name})"
+                name1 = ('ASC' if asc1 else 'DESC') + f" (TLE, {sat_name})"
                 fg1 = folium.FeatureGroup(name=name1, show=True)
                 poly1 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h1)
                 folium.Polygon(locations=poly1, color=color1, weight=4, opacity=1.0,
                                fill=True, fill_color=color1, fill_opacity=0.12,
-                               tooltip=f"{sat_name} • {label1} (visual) • heading {h1:.1f}° @ {t1.isoformat()}").add_to(fg1)
+                               tooltip=f"{sat_name} • {label1} (TLE) • heading {h1:.1f}° @ {t1.isoformat()}").add_to(fg1)
                 corn1 = poly1[:4]
                 folium.PolyLine([corn1[0], corn1[2]], color=color1, weight=3, opacity=0.8).add_to(fg1)
                 folium.PolyLine([corn1[1], corn1[3]], color=color1, weight=3, opacity=0.8).add_to(fg1)
                 add_heading_arrow(fg1, lat, lon, h1, color=color1)
                 fg1.add_to(m1)
-                st.caption(f"🛰 {sat_name} • {label1} (visual) • heading {h1:.1f}° @ {t1.isoformat()}")
+                st.caption(f"🛰 {sat_name} • {label1} (TLE) • heading {h1:.1f}° @ {t1.isoformat()}")
 
             if 'opposite' in pair:
                 h2, t2, asc2 = pair['opposite']
                 label2 = 'Ascendente' if asc2 else 'Descendente'
                 color2 = '#00c853' if asc2 else '#ff0000'
-                name2 = ('ASC' if asc2 else 'DESC') + f" (visual, {sat_name})"
+                name2 = ('ASC' if asc2 else 'DESC') + f" (TLE, {sat_name})"
                 fg2 = folium.FeatureGroup(name=name2, show=True)
                 poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
                 folium.Polygon(locations=poly2, color=color2, weight=4, opacity=1.0,
                                fill=True, fill_color=color2, fill_opacity=0.10,
-                               tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}").add_to(fg2)
+                               tooltip=f"{sat_name} • {label2} (TLE) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}").add_to(fg2)
                 corn2 = poly2[:4]
                 folium.PolyLine([corn2[0], corn2[2]], color=color2, weight=3, opacity=0.8).add_to(fg2)
                 folium.PolyLine([corn2[1], corn2[3]], color=color2, weight=3, opacity=0.8).add_to(fg2)
                 add_heading_arrow(fg2, lat, lon, h2, color=color2)
                 fg2.add_to(m1)
-                st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}")
+                st.caption(f"🛰 {sat_name} • {label2} (TLE) • heading {h2:.1f}° (Δ≈{_ang_sep(h2, h1):.0f}°) @ {t2.isoformat()}")
 
             if 'first' in pair and 'opposite' not in pair:
-                # desenha orientação oposta sintética (+180°) para garantir as duas órbitas
-                h2 = (h1 + 180.0) % 360.0
-                asc2 = not asc1
-                label2 = 'Ascendente' if asc2 else 'Descendente'
-                color2 = '#00c853' if asc2 else '#ff0000'
-                name2 = ('ASC' if asc2 else 'DESC') + f" (visual, {sat_name})"
-                fg2 = folium.FeatureGroup(name=name2, show=True)
-                poly2 = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=h2)
-                folium.Polygon(
-                    locations=poly2,
-                    color=color2, weight=4, opacity=1.0,
-                    fill=True, fill_color=color2, fill_opacity=0.10,
-                    tooltip=f"{sat_name} • {label2} (visual) • heading {h2:.1f}° (oposto sintético)"
-                ).add_to(fg2)
-                corn2 = poly2[:4]
-                folium.PolyLine([corn2[0], corn2[2]], color=color2, weight=3, opacity=0.8).add_to(fg2)
-                folium.PolyLine([corn2[1], corn2[3]], color=color2, weight=3, opacity=0.8).add_to(fg2)
-                add_heading_arrow(fg2, lat, lon, h2, color=color2)
-                fg2.add_to(m1)
-                st.caption(f"🛰 {sat_name} • {label2} (visual) • heading {h2:.1f}° (oposto sintético)")
+                st.warning(f"Não foi possível encontrar a órbita oposta REAL dentro de {used_h} h a partir do horário. Tente ajustar a data/hora ou confirmar o TLE.")")
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
