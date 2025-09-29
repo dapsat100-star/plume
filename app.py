@@ -1,10 +1,14 @@
-# app.py — mira arrastável + captura em tempo real (last_active_drawing) + clique fallback
+# app.py — mira arrastável + captura em tempo real + clique fallback + régua/medição + pluma ppb
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
 import streamlit as st
 import folium
-from folium.plugins import Draw
+from folium.plugins import Draw, MeasureControl
+try:
+    from folium.plugins import ScaleBar  # disponível em versões mais novas do folium
+except Exception:
+    ScaleBar = None
 from streamlit_folium import st_folium
 from PIL import Image
 from matplotlib import cm
@@ -107,7 +111,7 @@ def effective_height(H, V, d, Tamb, Tstack, u):
     return H + max(delta_m, delta_b, 0.0)
 
 def compute_conc(lat, lon, p):
-    extent_km = 2.0                 # ~1 km de raio (25 m/pixel → 80 px por km → 160 px)
+    extent_km = 2.0                 # ~1 km de raio
     px_per_km = PX_PER_KM_FIXED     # 25 m/pixel
     R_earth = 6371000.0
     lat_rad = np.deg2rad(lat)
@@ -156,7 +160,7 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ============ SELEÇÃO: MIRA ARRASTÁVEL + TEMPO REAL + CLIQUE ============
+# ============ SELEÇÃO: MIRA ARRASTÁVEL + TEMPO REAL + CLIQUE + RÉGUA ============
 if ss.source is None or not ss.locked:
     st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione/ARRASTE a mira e **clique em Save** na barrinha cinza. "
             "Se preferir, um **clique simples** no mapa também habilita o botão.")
@@ -164,6 +168,13 @@ if ss.source is None or not ss.locked:
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
     folium.TileLayer("OpenStreetMap").add_to(m_sel)
+
+    # Régua gráfica e medição interativa no mapa de seleção
+    if ScaleBar:
+        ScaleBar(position="bottomleft", imperial=False).add_to(m_sel)
+    m_sel.add_child(MeasureControl(primary_length_unit='meters',
+                                  secondary_length_unit='kilometers',
+                                  position='topleft'))
 
     # Toolbar: só Marker; edição/remoção habilitadas
     Draw(
@@ -212,7 +223,7 @@ if ss.source is None or not ss.locked:
         height=560,
         returned_objects=[
             "all_drawings",
-            "last_active_drawing",  # posição atual da mira enquanto arrasta
+            "last_active_drawing",
             "last_draw",
             "last_clicked"
         ],
@@ -300,6 +311,13 @@ else:
 
     png_bytes, bounds = ss.overlay
     m1 = folium.Map(location=[lat, lon], zoom_start=15, control_scale=True)
+    # Escala e régua de medição também no mapa final
+    if ScaleBar:
+        ScaleBar(position="bottomleft", imperial=False).add_to(m1)
+    m1.add_child(MeasureControl(primary_length_unit='meters',
+                                secondary_length_unit='kilometers',
+                                position='topleft'))
+
     folium.raster_layers.ImageOverlay(
         image="data:image/png;base64," + base64.b64encode(png_bytes).decode("utf-8"),
         bounds=bounds, opacity=opacity, name="Pluma").add_to(m1)
