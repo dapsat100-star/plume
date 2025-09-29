@@ -658,7 +658,13 @@ else:
             label = "Ascendente" if is_asc else "Descendente"
             poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading_deg)
             folium.Polygon(
-                locations=poly, color="#1f77b4", weight=2, fill=True, fill_opacity=0.10,
+                locations=poly,
+                color="#00c853",        # verde forte (traço externo)
+                weight=4,                # traço mais espesso
+                opacity=1.0,
+                fill=True,
+                fill_color="#00c853",
+                fill_opacity=0.12,       # leve preenchimento
                 tooltip=f"GHGSat {sat_name} • {label} • heading {heading_deg:.1f}° @ {t_utc.isoformat()}"
             ).add_to(m1)
             st.caption(f"🛰 {sat_name} · heading {heading_deg:.1f}° (N=0°, horário) · {label}")
@@ -667,4 +673,3 @@ else:
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
