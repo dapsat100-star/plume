@@ -1,12 +1,12 @@
-# app.py — mira arrastável + captura em tempo real + clique fallback + régua/medição + pluma ppb
+# app.py — Pluma Gaussiana + Mira arrastável + Régua + GHGSat Footprint (TLE opcional)
 # -*- coding: utf-8 -*-
-import io, base64
+import io, base64, datetime as dt
 import numpy as np
 import streamlit as st
 import folium
 from folium.plugins import Draw, MeasureControl
 try:
-    from folium.plugins import ScaleBar  # disponível em versões mais novas do folium
+    from folium.plugins import ScaleBar  # pode não existir em versões bem antigas
 except Exception:
     ScaleBar = None
 from streamlit_folium import st_folium
@@ -15,8 +15,8 @@ from matplotlib import cm
 from geopy.geocoders import Nominatim
 
 # ============ CONFIG ============
-st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel, kg/h)", layout="wide")
-st.title("Pluma Gaussiana — 25 m/pixel · emissão em kg CH₄/h · ppb 0–450")
+st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint", layout="wide")
+st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + GHGSat Footprint 5×5 km")
 
 st.markdown("""
 <style>
@@ -76,6 +76,23 @@ with st.sidebar:
         scale_mode = st.selectbox("Escala de cores", ["Absoluta (linear)", "Absoluta (log10)"], index=0)
         st.caption("Faixa absoluta fixa: **0 · 150 · 300 · 450 ppb**")
 
+    with st.expander("🛰 GHGSat — Footprint", expanded=True):
+        ghg_enable   = st.checkbox("Mostrar footprint", value=True)
+        ghg_size_km  = st.number_input("Tamanho (km)", 1.0, 20.0, 5.0, 0.5)
+        ghg_rot_deg  = st.number_input("Rotação manual (° a partir do Norte, horário)", -180.0, 180.0, 0.0, 1.0)
+        ghg_shift_km = st.number_input("Deslocamento ao longo da trilha (km)", -10.0, 10.0, 0.0, 0.5,
+                                       help="Usado para separar visualmente ascendente/descendente.")
+
+    with st.expander("🛰 GHGSat — Orientação pelo TLE (opcional)", expanded=False):
+        use_tle = st.checkbox("Auto-orientar footprint com TLE", value=False,
+                              help="Alinha o footprint ao ground-track real no instante escolhido.")
+        tle_l1 = st.text_input("TLE linha 1", value="", placeholder="1 XXXXXU 20XXXA ...")
+        tle_l2 = st.text_input("TLE linha 2", value="", placeholder="2 XXXXX  XX.XXXXX ...")
+        # default = agora em UTC
+        now_utc = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+        obs_date = st.date_input("Data (UTC)", value=now_utc.date())
+        obs_time = st.time_input("Hora (UTC)", value=now_utc.time().replace(microsecond=0))
+
     st.markdown("---")
     c1, c2 = st.columns(2)
     if c1.button("Atualizar pluma", type="primary", use_container_width=True):
@@ -86,7 +103,7 @@ with st.sidebar:
 # ============ CONVERSÃO ============
 Q_gps = (float(Q_kgph) * 1000.0) / 3600.0  # kg/h -> g/s
 
-# ============ MODELO ============
+# ============ MODELO PLUMA ============
 def sigma_yz(x_m, stability, is_urban=False):
     x_km = np.maximum(x_m/1000.0, 1e-6)
     s = stability.upper()
@@ -154,11 +171,63 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     else:
         A = A_ppb
         vmin_, vmax_ = vmin, vmax
-    N = np.clip((A - vmin_) / (vmax_ - vmin_ + 1e-12), 0, 1)
+    N = np.clip((A - vmin_) / (vmax - vmin + 1e-12), 0, 1)
     idx = (N*255).astype(np.uint8)
     alpha = (np.sqrt(N)*255).astype(np.uint8); alpha[N<=0.003]=0
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
+
+# ======== UTILITÁRIOS FOOTPRINT ========
+def _meters_per_deg(lat_deg: float):
+    R = 6371000.0
+    m_per_deg_lat = np.pi * R / 180.0
+    m_per_deg_lon = m_per_deg_lat * np.cos(np.deg2rad(lat_deg))
+    return m_per_deg_lat, max(m_per_deg_lon, 1e-6)
+
+def _square_poly(lat0, lon0, size_km, rot_deg=0.0, shift_km=0.0):
+    """Quadrado size_km×size_km centrado em (lat0,lon0), rotacionado e deslocado ao longo do eixo principal (N)."""
+    half_m = (size_km * 1000.0) / 2.0
+    pts = np.array([[-half_m, -half_m],
+                    [ half_m, -half_m],
+                    [ half_m,  half_m],
+                    [-half_m,  half_m],
+                    [-half_m, -half_m]], dtype=float)
+    # Rotação: referência N=0°, sentido horário
+    theta = np.deg2rad(rot_deg)
+    # Conversão local EN (E,N) — matriz ajustada para referência Norte
+    Rz = np.array([[ np.sin(theta),  np.cos(theta)],
+                   [ np.cos(theta), -np.sin(theta)]])
+    pts_rot = pts @ Rz.T
+    # Desloca ao longo do eixo principal (N)
+    pts_rot[:,1] += shift_km * 1000.0
+    # Para lat/lon
+    m_lat, m_lon = _meters_per_deg(lat0)
+    lats = lat0 + (pts_rot[:,1] / m_lat)
+    lons = lon0 + (pts_rot[:,0] / m_lon)
+    return list(map(lambda xy: [xy[0], xy[1]], zip(lats, lons)))
+
+# ---- Bearing geodésico e heading via TLE ----
+def _bearing_deg(lat1, lon1, lat2, lon2):
+    # N=0°, horário
+    from math import atan2, radians, degrees, cos, sin
+    φ1, φ2 = radians(lat1), radians(lat2)
+    Δλ = radians(lon2 - lon1)
+    x = sin(Δλ) * cos(φ2)
+    y = cos(φ1)*sin(φ2) - sin(φ1)*cos(φ2)*cos(Δλ)
+    brng = (degrees(atan2(x, y)) + 360.0) % 360.0
+    return brng
+
+def tle_heading_deg_at_time(tle_l1, tle_l2, dt_utc):
+    """Heading do ground-track no instante dt_utc (N=0°, horário) via Skyfield."""
+    from skyfield.api import load, EarthSatellite
+    ts = load.timescale()
+    sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
+    t0 = ts.utc(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour, dt_utc.minute, dt_utc.second - 1)
+    t1 = ts.utc(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour, dt_utc.minute, dt_utc.second + 1)
+    sp0 = sat.at(t0).subpoint(); sp1 = sat.at(t1).subpoint()
+    lat0, lon0 = sp0.latitude.degrees, sp0.longitude.degrees
+    lat1, lon1 = sp1.latitude.degrees, sp1.longitude.degrees
+    return _bearing_deg(lat0, lon0, lat1, lon1)
 
 # ============ SELEÇÃO: MIRA ARRASTÁVEL + TEMPO REAL + CLIQUE + RÉGUA ============
 if ss.source is None or not ss.locked:
@@ -169,24 +238,19 @@ if ss.source is None or not ss.locked:
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
     folium.TileLayer("OpenStreetMap").add_to(m_sel)
 
-    # Régua gráfica e medição interativa no mapa de seleção
-    if ScaleBar:
-        ScaleBar(position="bottomleft", imperial=False).add_to(m_sel)
+    if ScaleBar: ScaleBar(position="bottomleft", imperial=False).add_to(m_sel)
     m_sel.add_child(MeasureControl(primary_length_unit='meters',
-                                  secondary_length_unit='kilometers',
-                                  position='topleft'))
+                                   secondary_length_unit='kilometers',
+                                   position='topleft'))
 
     # Toolbar: só Marker; edição/remoção habilitadas
     Draw(
-        draw_options={
-            "polyline": False, "polygon": False, "circle": False,
-            "circlemarker": False, "rectangle": False,
-            "marker": True
-        },
+        draw_options={"polyline": False, "polygon": False, "circle": False,
+                      "circlemarker": False, "rectangle": False, "marker": True},
         edit_options={"edit": True, "remove": True}
     ).add_to(m_sel)
 
-    # Ícone "mira" (DivIcon) + arrastar habilitado
+    # Ícone "mira" + arrastar
     custom_js = """
     <script>
     (function(){
@@ -200,8 +264,7 @@ if ss.source is None or not ss.locked:
         L.Draw.Marker.prototype.options.icon = L.divIcon({
           className: 'crosshair-marker',
           html: '<div style="font-size:28px;font-weight:700;color:red;text-shadow:1px 1px 2px #fff;">＋</div>',
-          iconSize: [20,20],
-          iconAnchor: [10,10]
+          iconSize: [20,20], iconAnchor: [10,10]
         });
       }
       map.on('draw:created', function (e) {
@@ -221,12 +284,7 @@ if ss.source is None or not ss.locked:
     ret = st_folium(
         m_sel,
         height=560,
-        returned_objects=[
-            "all_drawings",
-            "last_active_drawing",
-            "last_draw",
-            "last_clicked"
-        ],
+        returned_objects=["all_drawings", "last_active_drawing", "last_draw", "last_clicked"],
         use_container_width=True
     )
 
@@ -236,27 +294,21 @@ if ss.source is None or not ss.locked:
         if lad:
             try:
                 if lad["geometry"]["type"] == "Point":
-                    lon, lat = lad["geometry"]["coordinates"]
-                    return float(lat), float(lon)
-            except Exception:
-                pass
+                    lon, lat = lad["geometry"]["coordinates"]; return float(lat), float(lon)
+            except Exception: pass
         drawings = ret_obj.get("all_drawings") if ret_obj else None
         if drawings:
             for feat in drawings[::-1]:
                 try:
                     if feat and feat["geometry"]["type"] == "Point":
-                        lon, lat = feat["geometry"]["coordinates"]
-                        return float(lat), float(lon)
-                except Exception:
-                    pass
+                        lon, lat = feat["geometry"]["coordinates"]; return float(lat), float(lon)
+                except Exception: pass
         ld = ret_obj.get("last_draw") if ret_obj else None
         if ld:
             try:
                 if ld["geometry"]["type"] == "Point":
-                    lon, lat = ld["geometry"]["coordinates"]
-                    return float(lat), float(lon)
-            except Exception:
-                pass
+                    lon, lat = ld["geometry"]["coordinates"]; return float(lat), float(lon)
+            except Exception: pass
         lc = ret_obj.get("last_clicked") if ret_obj else None
         if lc and "lat" in lc and "lng" in lc:
             return float(lc["lat"]), float(lc["lng"])
@@ -266,14 +318,11 @@ if ss.source is None or not ss.locked:
     if new_pt is not None:
         ss.pending_click = new_pt
 
-    # Painel e botões (Confirmar habilita assim que existir ponto)
+    # Painel e botões
     if ss.pending_click is not None:
         lat_p, lon_p = ss.pending_click
         addr = reverse_geocode(lat_p, lon_p)
-        st.markdown(
-            f"📍 **Ponto selecionado:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
-            unsafe_allow_html=True
-        )
+        st.markdown(f"📍 **Ponto selecionado:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""), unsafe_allow_html=True)
     else:
         st.caption("Posicione/arraste a mira e clique em **Save** (ou clique no mapa) para habilitar o botão.")
 
@@ -311,16 +360,42 @@ else:
 
     png_bytes, bounds = ss.overlay
     m1 = folium.Map(location=[lat, lon], zoom_start=15, control_scale=True)
-    # Escala e régua de medição também no mapa final
-    if ScaleBar:
-        ScaleBar(position="bottomleft", imperial=False).add_to(m1)
+    if ScaleBar: ScaleBar(position="bottomleft", imperial=False).add_to(m1)
     m1.add_child(MeasureControl(primary_length_unit='meters',
                                 secondary_length_unit='kilometers',
                                 position='topleft'))
 
+    # ---- Overlay da pluma ----
     folium.raster_layers.ImageOverlay(
         image="data:image/png;base64," + base64.b64encode(png_bytes).decode("utf-8"),
-        bounds=bounds, opacity=opacity, name="Pluma").add_to(m1)
+        bounds=bounds, opacity=opacity, name="Pluma (ppb)"
+    ).add_to(m1)
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
+
+    # ---- GHGSat footprints (Asc/Desc) ----
+    if ghg_enable:
+        rot_use = ghg_rot_deg  # padrão manual
+        if use_tle and tle_l1.strip() and tle_l2.strip():
+            try:
+                dt_utc = dt.datetime.combine(obs_date, obs_time).replace(tzinfo=dt.timezone.utc)
+                rot_use = float(tle_heading_deg_at_time(tle_l1, tle_l2, dt_utc))
+                st.caption(f"🔁 Rotação pelo TLE: {rot_use:.1f}° (N=0°, sentido horário).")
+            except Exception as e:
+                st.warning(f"Não foi possível calcular orientação pelo TLE: {e}. Usando rotação manual.")
+
+        # Ascendente: +shift ao longo da trilha
+        poly_asc = _square_poly(lat, lon, ghg_size_km, rot_deg=rot_use, shift_km=+ghg_shift_km)
+        folium.Polygon(
+            locations=poly_asc, color="#1f77b4", weight=2, fill=True, fill_opacity=0.10,
+            tooltip="GHGSat Footprint — Ascendente"
+        ).add_to(m1)
+
+        # Descendente: -shift para separar visualmente
+        poly_desc = _square_poly(lat, lon, ghg_size_km, rot_deg=rot_use, shift_km=-ghg_shift_km)
+        folium.Polygon(
+            locations=poly_desc, color="#ff7f0e", weight=2, fill=True, fill_opacity=0.10,
+            tooltip="GHGSat Footprint — Descendente"
+        ).add_to(m1)
+
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, use_container_width=True)
