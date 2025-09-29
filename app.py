@@ -1,4 +1,4 @@
-# app.py — mira central (center-lock) + confirmação + reverse geocode + entrada manual
+# app.py — seleção por clique (crosshair) + confirmação + reverse geocode + simulação
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -13,9 +13,9 @@ from geopy.geocoders import Nominatim
 st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel, kg/h)", layout="wide")
 st.title("Pluma Gaussiana — 25 m/pixel · emissão em kg CH₄/h · ppb 0–450")
 
+# Sidebar rolável e botões confortáveis
 st.markdown("""
 <style>
-/* Sidebar rolável e botões confortáveis */
 [data-testid="stSidebar"] { overflow-y: auto; max-height: 100vh; }
 .stButton>button { height: 40px; }
 </style>
@@ -24,6 +24,7 @@ st.markdown("""
 # ============ ESTADO ============
 ss = st.session_state
 ss.setdefault("source", None)         # (lat, lon) confirmado
+ss.setdefault("pending_click", None)  # (lat, lon) proposto
 ss.setdefault("overlay", None)
 ss.setdefault("_update", False)
 ss.setdefault("locked", False)
@@ -76,7 +77,7 @@ with st.sidebar:
     if c1.button("Atualizar pluma", type="primary", use_container_width=True):
         ss._update = True
     if c2.button("Selecionar outro ponto", use_container_width=True):
-        ss.source = None; ss.overlay = None; ss.locked = False
+        ss.source = None; ss.overlay = None; ss.locked = False; ss.pending_click = None
 
 # ============ CONVERSÃO ============
 Q_gps = (float(Q_kgph) * 1000.0) / 3600.0  # kg/h -> g/s
@@ -155,69 +156,61 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ============ SELEÇÃO POR MIRA CENTRAL ============
-with st.expander("➕ Selecionar ponto manualmente (lat/lon)", expanded=False):
-    c_lat, c_lon = st.columns(2)
-    lat_in = c_lat.number_input("Latitude", -90.0, 90.0, 0.0, 0.000001, format="%.6f")
-    lon_in = c_lon.number_input("Longitude", -180.0, 180.0, 0.0, 0.000001, format="%.6f")
-    if st.button("Usar coordenadas digitadas"):
-        ss.source = (float(lat_in), float(lon_in))
-        ss.locked = True
-        ss._update = True
-
+# ============ SELEÇÃO POR CLIQUE (cursor crosshair) ============
 if ss.source is None or not ss.locked:
-    st.info("🎯 Arraste o mapa até alinhar a **MIRA central** no alvo e clique **Confirmar ponto aqui**.")
+    st.info("👆 Clique no mapa para **apontar** o local da fonte. O ponto pode ser confirmado ou cancelado.")
 
-    center0 = (-22.9035, -43.2096)
-    m_sel = folium.Map(location=center0, zoom_start=15, control_scale=True)
-
-    # Mira fixa no centro (HTML/CSS) — NÃO bloqueia interações
-    crosshair_html = """
+    # cursor de mira durante a seleção
+    st.markdown("""
     <style>
-    .crosshair-fixed {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        width: 0; height: 0;
-        z-index: 9999;
-        pointer-events: none;
-        transform: translate(-50%, -50%);
-        font-size: 34px; font-weight: 700; color: red;
-        text-shadow: 1px 1px 2px #fff;
-    }
+    .leaflet-container { cursor: crosshair !important; }
     </style>
-    <div class="crosshair-fixed">＋</div>
-    """
-    m_sel.get_root().html.add_child(folium.Element(crosshair_html))
+    """, unsafe_allow_html=True)
 
-    # Render do mapa (pedimos 'center' no retorno)
+    # mapa de seleção (evita zoom duplo por engano)
+    center0 = ss.pending_click or (-22.9035, -43.2096)
+    m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
+    folium.TileLayer("OpenStreetMap").add_to(m_sel)
+    m_sel.options["doubleClickZoom"] = False
+
+    # marcador provisório se já houve clique
+    if ss.pending_click is not None:
+        lat_p, lon_p = ss.pending_click
+        folium.CircleMarker(
+            [lat_p, lon_p], radius=7, color="#0066ff",
+            fill=True, fill_opacity=0.9, tooltip="Ponto provisório"
+        ).add_to(m_sel)
+
+    # captura clique
     ret = st_folium(
         m_sel,
-        height=600,
-        returned_objects=["center", "zoom", "bounds"],
+        height=620,
+        returned_objects=["last_clicked"],
         use_container_width=True
     )
 
-    center_lat = ret["center"]["lat"] if ret and ret.get("center") else center0[0]
-    center_lon = ret["center"]["lng"] if ret and ret.get("center") else center0[1]
-    addr = reverse_geocode(center_lat, center_lon)
+    # atualiza ponto pendente a cada clique
+    if ret and ret.get("last_clicked"):
+        ss.pending_click = (ret["last_clicked"]["lat"], ret["last_clicked"]["lng"])
 
-    st.markdown(
-        f"📍 **Centro atual:** `{center_lat:.6f}, {center_lon:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
-        unsafe_allow_html=True
-    )
-
-    # Confirmar / cancelar
-    c_ok, c_cancel = st.columns(2)
-    if c_ok.button("✅ Confirmar ponto aqui", type="primary", use_container_width=True):
-        ss.source = (center_lat, center_lon)
-        ss.locked = True
-        ss._update = True
-        st.success("Ponto confirmado com base na mira central 🎯")
-    if c_cancel.button("↩️ Cancelar / resetar vista", use_container_width=True):
-        ss.source = None
-        ss.locked = False
-        ss._update = False
+    # painel de confirmação
+    if ss.pending_click is not None:
+        lat_p, lon_p = ss.pending_click
+        addr = reverse_geocode(lat_p, lon_p)
+        st.markdown(
+            f"📍 **Ponto proposto:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
+            unsafe_allow_html=True
+        )
+        c_ok, c_cancel = st.columns(2)
+        if c_ok.button("✅ Confirmar este ponto", use_container_width=True):
+            ss.source = ss.pending_click
+            ss.locked = True
+            ss._update = True
+            ss.pending_click = None
+            st.success("Fonte confirmada. Gerando pluma…")
+        if c_cancel.button("↩️ Cancelar / escolher outro", use_container_width=True):
+            ss.pending_click = None
+            st.info("Clique novamente no mapa para apontar outro local.")
 
 else:
     # ====== Simulação/render ======
@@ -244,3 +237,4 @@ else:
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, use_container_width=True)
+
