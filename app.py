@@ -1,4 +1,4 @@
-# app.py — ppb, 25 m/pixel, legenda à direita (Edge-safe), Q em kg/h
+# app.py — ppb, 25 m/pixel, legenda fixa à direita (Edge-safe), Q em kg/h
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -7,7 +7,6 @@ import folium
 from streamlit_folium import st_folium
 from PIL import Image
 from matplotlib import cm
-from folium.plugins import FloatImage
 
 # ---------- Config ----------
 st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel, kg/h)", layout="wide")
@@ -143,42 +142,47 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ---------- Legenda (Edge-safe) ----------
-def _jet_gradient_png(w=16, h=300):
-    """Gera um PNG vertical (bottom->top) com a colormap 'jet'."""
-    lut = (cm.get_cmap('jet', 256)(np.linspace(0,1,256))[:,:3]*255).astype(np.uint8)
-    idx = np.linspace(0,255,h).astype(np.uint8)
-    rgb = lut[idx]
-    img = np.repeat(rgb[None, :, :], w, axis=0).transpose(1,0,2)  # (h,w,3)
-    pil = Image.fromarray(img, mode="RGB")
-    bio = io.BytesIO(); pil.save(bio, format="PNG"); bio.seek(0)
-    import base64
-    return "data:image/png;base64," + base64.b64encode(bio.read()).decode("utf-8")
-
-def add_legend_edge_safe(m):
-    """Barra à direita + ticks 0/150/300/450 ppb. Compatível com Edge/iframe."""
-    bar_url = _jet_gradient_png(w=16, h=300)
-    # posiciona aproximadamente (bottom); move para direita via CSS
-    FloatImage(bar_url, bottom=80, left=0).add_to(m)
-
-    css_html = """
+# ---------- Legenda fixa (Edge-safe) ----------
+def add_legend_fixed_right_ppb(m):
+    """Legenda fixa à direita (Edge-safe): [ppb] com 0/150/300/450."""
+    html = """
     <style>
-    .float_image { position: absolute !important; right: 10px !important; left: auto !important; z-index: 10000 !important; }
-    .float_image img { width:16px !important; height:300px !important; border-radius:6px; box-shadow:0 0 6px rgba(0,0,0,0.3); }
-    #legend_labels {
-      position:absolute; right: 36px; top: 70px; z-index:10001;
-      font-size:12px; color:#000; pointer-events:none;
-    }
-    #legend_labels .hdr {
-      position:absolute; right: -22px; top: -8px;
-      background:rgba(255,255,255,0.85); padding:1px 4px; border-radius:4px; font-weight:600;
-    }
-    #legend_labels .t0   { position:absolute; right: 0; top: 310px; }
-    #legend_labels .t150 { position:absolute; right: 0; top: 210px; }
-    #legend_labels .t300 { position:absolute; right: 0; top: 110px; }
-    #legend_labels .t450 { position:absolute; right: 0; top: 10px; }
+      .ppb-legend {
+        position: absolute; 
+        top: 80px; 
+        right: 10px; 
+        width: 36px; 
+        height: 340px; 
+        z-index: 10000; 
+        pointer-events: none;
+      }
+      .ppb-legend .bar {
+        position: absolute; 
+        right: 8px; 
+        top: 10px; 
+        width: 16px; 
+        height: 300px;
+        border-radius: 6px; 
+        box-shadow: 0 0 6px rgba(0,0,0,0.3);
+        background: linear-gradient(to top, purple, blue, cyan, green, yellow, red);
+      }
+      .ppb-legend .hdr {
+        position: absolute; 
+        right: 4px; 
+        top: -6px; 
+        font-size: 12px; 
+        font-weight: 600;
+        background: rgba(255,255,255,0.85); 
+        padding: 1px 4px; 
+        border-radius: 4px;
+      }
+      .ppb-legend .t0   { position:absolute; right:30px; top:310px; font-size:12px; color:#000; }
+      .ppb-legend .t150 { position:absolute; right:30px; top:210px; font-size:12px; color:#000; }
+      .ppb-legend .t300 { position:absolute; right:30px; top:110px; font-size:12px; color:#000; }
+      .ppb-legend .t450 { position:absolute; right:30px; top:10px;  font-size:12px; color:#000; }
     </style>
-    <div id="legend_labels">
+    <div class="ppb-legend">
+      <div class="bar"></div>
       <div class="hdr">[ppb]</div>
       <div class="t0">0</div>
       <div class="t150">150</div>
@@ -186,7 +190,7 @@ def add_legend_edge_safe(m):
       <div class="t450">450</div>
     </div>
     """
-    m.get_root().html.add_child(folium.Element(css_html))
+    m.get_root().html.add_child(folium.Element(html))
 
 # ---------- Fluxo ----------
 if ss.source is None or not ss.locked:
@@ -222,8 +226,8 @@ else:
         bounds=bounds, opacity=opacity, name="Pluma").add_to(m1)
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
 
-    # Legenda à prova de Edge
-    add_legend_edge_safe(m1)
+    # Legenda fixa à prova de Edge
+    add_legend_fixed_right_ppb(m1)
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, use_container_width=True)
