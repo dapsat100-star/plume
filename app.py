@@ -1,3 +1,50 @@
+# --- cabeçalho obrigatório (vem antes de qualquer uso de `ss`) ---
+import streamlit as st
+import numpy as np
+import folium
+from folium.plugins import Draw, MeasureControl
+try:
+    from folium.plugins import ScaleBar
+except Exception:
+    ScaleBar = None
+from streamlit_folium import st_folium
+
+# (se você usa reverse_geocode embaixo, deixe estes dois imports também)
+from geopy.geocoders import Nominatim
+import datetime as dt
+
+st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint", layout="wide")
+
+# estado da sessão — PRECISA estar antes do `if ss.source ...`
+ss = st.session_state
+ss.setdefault("source", None)
+ss.setdefault("pending_click", None)
+ss.setdefault("overlay", None)
+ss.setdefault("_update", False)
+ss.setdefault("locked", False)
+ss.setdefault("tle_cache", {})
+ss.setdefault("tle_path_loaded", "")
+
+# defaults estáveis para data/hora (evita loop)
+if "obs_date" not in ss or "obs_time" not in ss:
+    _now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc, microsecond=0)
+    ss.obs_date = _now.date()
+    ss.obs_time = _now.time()
+
+# util opcional — só se você chama reverse_geocode no bloco de seleção
+@st.cache_resource
+def _geocoder():
+    return Nominatim(user_agent="plume_streamlit_app")
+@st.cache_data(ttl=3600, show_spinner=False)
+def reverse_geocode(lat, lon):
+    try:
+        loc = _geocoder().reverse((lat, lon), language="pt", zoom=18, exactly_one=True, timeout=5)
+        return loc.address if loc else None
+    except Exception:
+        return None
+# --- fim do cabeçalho ---
+
+
 # ================== SELEÇÃO (clique simples + marcador opcional) ==================
 if ss.source is None or not ss.locked:
     st.info("🖱️ **Clique uma vez no mapa** para escolher o ponto **(não precisa Save)**. "
