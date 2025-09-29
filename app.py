@@ -18,12 +18,15 @@ import datetime as dt
 # ================== CONFIG ==================
 st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint (TLE do arquivo)", layout="wide")
 st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSat 5×5 km (via TLE)")
-st.markdown("""
+st.markdown(
+    """
 <style>
 [data-testid="stSidebar"] { overflow-y: auto; max-height: 100vh; }
 .stButton>button { height: 40px; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # ================== ESTADO (antes de qualquer uso!) ==================
 ss = st.session_state
@@ -34,11 +37,11 @@ ss.setdefault("_update", False)
 ss.setdefault("locked", False)
 ss.setdefault("tle_cache", {})
 ss.setdefault("tle_path_loaded", "")
-ss.setdefault("tle_choice", None)
+# NÃO defina/atribua ss["tle_choice"] depois que o widget com key="tle_choice" existir
 
 # defaults ESTÁVEIS para data/hora (evita loop com utcnow)
 if "obs_date" not in ss or "obs_time" not in ss:
-    _now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc, microsecond=0)
+    _now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     ss.obs_date = _now.date()
     ss.obs_time = _now.time()
 
@@ -87,10 +90,6 @@ with st.sidebar:
         st.caption("Faixa absoluta fixa: **0 · 150 · 300 · 450 ppb**")
 
     with st.expander("🛰 GHGSat — TLE (do arquivo)", expanded=True):
-        tle_path = st.text_input("Caminho do arquivo TLE no repo", value="data/ghgsat.tle",
-                                 help="Formato: blocos Nome / Linha1 / Linha2.")
-        reload_tle = st.button("Recarregar TLE")
-
         def load_tle_file(path):
             sats = {}
             if not os.path.exists(path):
@@ -106,21 +105,43 @@ with st.sidebar:
                     i += 1
             return sats
 
+        tle_path = st.text_input(
+            "Caminho do arquivo TLE no repo",
+            value="data/ghgsat.tle",
+            help="Formato: blocos Nome / Linha1 / Linha2.",
+        )
+        reload_tle = st.button("Recarregar TLE")
+
+        # (1) Recarrega cache se mudou o caminho ou clicou no botão
         if reload_tle or (ss.tle_path_loaded != tle_path):
             ss.tle_cache = load_tle_file(tle_path)
             ss.tle_path_loaded = tle_path
+            # invalida escolha anterior para recalcular default ANTES de instanciar o selectbox
+            ss.pop("tle_choice", None)
 
-        if not ss.tle_cache:
+        options = list(ss.tle_cache.keys())
+        if not options:
             st.error("Arquivo TLE não encontrado ou vazio. Coloque um arquivo no formato Nome/L1/L2.")
         else:
-            ss.tle_choice = st.selectbox("Satélite", list(ss.tle_cache.keys()), key="tle_choice")
+            # (2) Define default em session_state **antes** de criar o widget
+            if "tle_choice" not in ss or ss.tle_choice not in options:
+                ss.tle_choice = options[0]
+            # (3) Cria o widget sem atribuições posteriores ao mesmo key
+            st.selectbox(
+                "Satélite",
+                options=options,
+                index=options.index(ss.tle_choice),
+                key="tle_choice",
+            )
 
+        # Data/hora de observação
         obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
         obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
 
     st.markdown("---")
     co, cr = st.columns(2)
-    if co.button("Atualizar pluma", type="primary", use_container_width=True): ss._update = True
+    if co.button("Atualizar pluma", type="primary", use_container_width=True):
+        ss._update = True
     if cr.button("Selecionar outro ponto", use_container_width=True):
         ss.source = None; ss.overlay = None; ss.locked = False; ss.pending_click = None
 
@@ -173,7 +194,7 @@ def compute_conc(lat, lon, p):
     H_eff = effective_height(p["H"], p["V"], p["d"], p["Tamb"], p["Tstack"], p["u"])
     pref  = p["Q_gps"]/(2*np.pi*p["u"]*sigy*sigz + 1e-12)
     C = pref * np.exp(-0.5*(Yp**2)/(sigy**2 + 1e-12)) * (
-        np.exp(-0.5*(H_eff**2)/(sigz**2 + 1e-12)) + np.exp(-0.5*(H_eff**2)/(sigz**2 + 1e-12))
+        2.0*np.exp(-0.5*(H_eff**2)/(sigz**2 + 1e-12))
     )
     C[~mask] = 0.0
 
@@ -216,7 +237,8 @@ def _square_poly(lat0, lon0, size_km, rot_deg=0.0):
                     [-half_m,  half_m],
                     [-half_m, -half_m]], dtype=float)
     theta = np.deg2rad(rot_deg)
-    Rz = np.array([[ np.sin(theta),  np.cos(theta)],   # ajuste ref. Norte
+    # Rotação com 0° = Norte, sentido horário (x=Este, y=Norte)
+    Rz = np.array([[ np.sin(theta),  np.cos(theta)],
                    [ np.cos(theta), -np.sin(theta)]])
     pts_rot = pts @ Rz.T
     m_lat, m_lon = _meters_per_deg(lat0)
@@ -361,20 +383,23 @@ else:
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
 
     # Footprint GHGSat 5×5 km orientado por TLE do arquivo
-    if ss.tle_cache and ss.tle_choice:
+    if ss.tle_cache and ("tle_choice" in ss):
         try:
-            l1, l2 = ss.tle_cache[ss.tle_choice]
+            sat_name = ss.tle_choice
+            l1, l2 = ss.tle_cache[sat_name]
             t_utc = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
             heading_deg, is_asc = tle_heading_and_sense(l1, l2, t_utc)
             label = "Ascendente" if is_asc else "Descendente"
             poly = _square_poly(lat, lon, FOOTPRINT_SIZE_KM, rot_deg=heading_deg)
             folium.Polygon(
                 locations=poly, color="#1f77b4", weight=2, fill=True, fill_opacity=0.10,
-                tooltip=f"GHGSat {ss.tle_choice} • {label} • heading {heading_deg:.1f}° @ {t_utc.isoformat()}"
+                tooltip=f"GHGSat {sat_name} • {label} • heading {heading_deg:.1f}° @ {t_utc.isoformat()}"
             ).add_to(m1)
-            st.caption(f"🛰 {ss.tle_choice} · heading {heading_deg:.1f}° (N=0°, horário) · {label}")
+            st.caption(f"🛰 {sat_name} · heading {heading_deg:.1f}° (N=0°, horário) · {label}")
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
+
+ 
