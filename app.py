@@ -432,13 +432,27 @@ def _ang_sep(a_deg: float, b_deg: float) -> float:
 
 # Encontrar a PRIMEIRA ASC e a PRIMEIRA DESC, independentemente uma da outra (até 30 dias)
 
-def find_first_asc_desc_from(sat, ts, start_dt, max_hours: int = 720):
-    """Procura, a partir de start_dt, a primeira passagem ASC e a primeira DESC (reais, via TLE).
+def _haversine_vec(lat1, lon1, lat2, lon2):
+    """Distância haversine vetorizada (km) entre arrays (lat1,lon1) e um ponto (lat2,lon2)."""
+    R = 6371.0088
+    lat1 = np.deg2rad(lat1); lon1 = np.deg2rad(lon1)
+    lat2 = np.deg2rad(lat2); lon2 = np.deg2rad(lon2)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2.0)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2.0)**2
+    c = 2*np.arcsin(np.minimum(1.0, np.sqrt(a)))
+    return R * c
+
+def find_first_asc_desc_near(sat, ts, start_dt, tgt_lat, tgt_lon, max_hours: int = 720, radius_km: float = 400.0):
+    """A partir de start_dt, encontra a PRIMEIRA passagem ASC e a PRIMEIRA DESC
+    cujos subpontos chegam a até 'radius_km' do alvo (tgt_lat,tgt_lon).
+    Tudo real via TLE. Varre até max_hours (padrão 30 dias).
     Retorna possivelmente {'asc': (heading_deg, dt), 'desc': (heading_deg, dt)}.
-    max_hours padrão: 720 h (30 dias)."""
-    if max_hours <= 72:      step_s = 60   # 1 min
-    elif max_hours <= 240:   step_s = 120  # 2 min
-    else:                    step_s = 300  # 5 min
+    """
+    # passo adaptativo
+    if max_hours <= 72:      step_s = 60
+    elif max_hours <= 240:   step_s = 120
+    else:                    step_s = 300
     N = int((max_hours * 3600) // step_s) + 2
     if N < 3: N = 3
 
@@ -448,23 +462,50 @@ def find_first_asc_desc_from(sat, ts, start_dt, max_hours: int = 720):
     sp = sat.at(tarr).subpoint()
     lat = sp.latitude.degrees
     lon = sp.longitude.degrees
-
     if len(lat) < 2:
         return {}
 
-    # Heading entre amostras consecutivas
+    # distâncias ao alvo
+    dist_km = _haversine_vec(lat, lon, tgt_lat, tgt_lon)
+    near = dist_km <= float(radius_km)
+    if not np.any(near):
+        return {}
+
+    # heading entre amostras consecutivas
     b = _bearing_deg_vec(lat[:-1], lon[:-1], lat[1:], lon[1:])
-    # Classificação por Δlat (robusto)
-    asc_mask  = (lat[1:] > lat[:-1])   # indo ao norte
-    desc_mask = (lat[1:] < lat[:-1])   # indo ao sul
+    # Δlat para classificar asc/desc
+    dlat = lat[1:] - lat[:-1]
+
+    # encontrar blocos contíguos de 'near'
+    idx = np.nonzero(near)[0]
+    # separa em segmentos (onde diferença entre índices > 1 inicia novo segmento)
+    splits = np.where(np.diff(idx) > 1)[0] + 1
+    segments = np.split(idx, splits)
+
+    first_asc = None; first_desc = None
+    for seg in segments:
+        if len(seg) < 2:
+            i_min = seg[0]
+        else:
+            # ponto do segmento mais perto do alvo
+            i_min = seg[np.argmin(dist_km[seg])]
+        # usamos o par (i_min, i_min+1) para heading e Δlat (garante limite)
+        k = min(i_min, len(b)-1)
+        heading = float(b[k])
+        is_asc = (dlat[k] > 0.0)
+        t_evt = dts[k+1]
+        if is_asc and first_asc is None:
+            first_asc = (heading, t_evt)
+        if (not is_asc) and first_desc is None:
+            first_desc = (heading, t_evt)
+        if first_asc is not None and first_desc is not None:
+            break
 
     out = {}
-    idx_asc = np.where(asc_mask)[0]
-    if idx_asc.size > 0:
-        i = int(idx_asc[0]); out['asc'] = (float(b[i]), dts[i+1])
-    idx_desc = np.where(desc_mask)[0]
-    if idx_desc.size > 0:
-        j = int(idx_desc[0]); out['desc'] = (float(b[j]), dts[j+1])
+    if first_asc is not None:
+        out['asc'] = first_asc
+    if first_desc is not None:
+        out['desc'] = first_desc
     return out
 
 # Legenda fixa ASC (verde) / DESC (vermelho)
@@ -636,7 +677,8 @@ else:
             t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
             ts_obj, sat_obj = get_sat_cached(sat_name, l1, l2)
 
-            samples = find_first_asc_desc_from(sat_obj, ts_obj, t_center, max_hours=720)  # 30 dias
+            # procura as primeiras passagens PRÓXIMAS ao alvo (real, via TLE)
+            samples = find_first_asc_desc_near(sat_obj, ts_obj, t_center, lat, lon, max_hours=720, radius_km=400.0)  # 30 dias
 
             # ASC (verde)
             if 'asc' in samples:
