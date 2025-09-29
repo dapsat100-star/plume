@@ -1,7 +1,5 @@
 # app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE de arquivo) — clique simples + anti-rerun
 # -*- coding: utf-8 -*-
-import streamlit as st
-ss = st.session_state
 import io, base64, os
 import numpy as np
 import streamlit as st
@@ -13,14 +11,13 @@ except Exception:
     ScaleBar = None
 from streamlit_folium import st_folium
 from PIL import Image
-from matplotlib import cm
+import matplotlib
 from geopy.geocoders import Nominatim
 import datetime as dt
 
 # ================== CONFIG ==================
 st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint (TLE do arquivo)", layout="wide")
 st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSat 5×5 km (via TLE)")
-
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { overflow-y: auto; max-height: 100vh; }
@@ -28,7 +25,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================== ESTADO (antes de qualquer uso!) ==================
+# ================== ESTADO (inicialize ANTES de usar) ==================
 ss = st.session_state
 ss.setdefault("source", None)
 ss.setdefault("pending_click", None)
@@ -38,7 +35,7 @@ ss.setdefault("locked", False)
 ss.setdefault("tle_cache", {})
 ss.setdefault("tle_path_loaded", "")
 
-# defaults ESTÁVEIS para data/hora (evita loop com utcnow)
+# defaults estáveis para data/hora (evita loop com utcnow)
 if "obs_date" not in ss or "obs_time" not in ss:
     _now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc, microsecond=0)
     ss.obs_date = _now.date()
@@ -186,22 +183,25 @@ def compute_conc(lat, lon, p):
     return C, bounds
 
 def to_ppb_safe(C_val, pres_hPa, temp_K):
-    R_local = 8.314462618
-    M_CH4_local = 16.043
+    # conversão g/m3 -> ppb (assumindo CH4 ideal)
+    R = 8.314462618
+    M = 16.043
     P_pa = float(pres_hPa) * 100.0
-    return C_val * (R_local * float(temp_K)) / (M_CH4_local * P_pa) * 1e9
+    return C_val * (R * float(temp_K)) / (M * P_pa) * 1e9
 
 def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
-    lut = (cm.get_cmap('jet', 256)(np.linspace(0,1,256))[:,:3]*255).astype(np.uint8)
+    cmap = matplotlib.colormaps.get_cmap('jet')
+    lut = (cmap(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
     if log:
         A = np.log10(np.maximum(A_ppb, 1e-12))
-        vmin_, vmax_ = np.log10(max(vmin,1e-12)+1e-12), np.log10(max(vmax,1e-12))
+        vmin_, vmax_ = np.log10(max(vmin, 1e-12) + 1e-12), np.log10(max(vmax, 1e-12))
     else:
         A = A_ppb
         vmin_, vmax_ = vmin, vmax
     N = np.clip((A - vmin_) / (vmax_ - vmin_ + 1e-12), 0, 1)
-    idx = (N*255).astype(np.uint8)
-    alpha = (np.sqrt(N)*255).astype(np.uint8); alpha[N<=0.003]=0
+    idx = (N * 255).astype(np.uint8)
+    alpha = (np.sqrt(N) * 255).astype(np.uint8)
+    alpha[N <= 0.003] = 0
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
@@ -294,14 +294,16 @@ if ss.source is None or not ss.locked:
                 try:
                     if feat and feat["geometry"]["type"] == "Point":
                         lon, lat = feat["geometry"]["coordinates"]; new_pt = (float(lat), float(lon)); break
-                except Exception: pass
+                except Exception:
+                    pass
         if new_pt is None:
             ld = ret.get("last_draw") if ret else None
             if ld:
                 try:
                     if ld["geometry"]["type"] == "Point":
                         lon, lat = ld["geometry"]["coordinates"]; new_pt = (float(lat), float(lon))
-                except Exception: pass
+                except Exception:
+                    pass
 
     # salva apenas se realmente mudou
     if new_pt is not None:
