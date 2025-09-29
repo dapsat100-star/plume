@@ -9,10 +9,15 @@ try:
     from folium.plugins import ScaleBar
 except Exception:
     ScaleBar = None
+# Geocoder (busca estilo Google Earth)
+try:
+    from folium.plugins import Geocoder
+except Exception:
+    Geocoder = None
 from streamlit_folium import st_folium
 from PIL import Image
 import matplotlib
-from geopy.geocoders import Nominatim
+from geopy.geocoders import Nominatim, Photon, ArcGIS
 import datetime as dt
 
 # ================== CONFIG ==================
@@ -37,6 +42,7 @@ ss.setdefault("_update", False)
 ss.setdefault("locked", False)
 ss.setdefault("tle_cache", {})
 ss.setdefault("tle_path_loaded", "")
+ss.setdefault("search_results", [])
 # NÃO defina/atribua ss["tle_choice"] depois que o widget com key="tle_choice" existir
 
 # defaults ESTÁVEIS para data/hora (evita loop com utcnow)
@@ -58,6 +64,78 @@ def reverse_geocode(lat, lon):
         return loc.address if loc else None
     except Exception:
         return None
+
+# ---- Geocoders extra para AUTOCOMPLETE ----
+@st.cache_resource
+def _geocoder_photon():
+    try:
+        return Photon(user_agent="plume_streamlit_app")
+    except Exception:
+        return None
+
+@st.cache_resource
+def _geocoder_arcgis():
+    try:
+        return ArcGIS(timeout=5)
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def geocode_multi(q: str, limit: int = 8):
+    """Busca multi-provedor (Photon → Nominatim → ArcGIS) com deduplicação.
+    Retorna lista de dicts: {label, lat, lon, provider}. Aceita também "lat,lon" direto."""
+    results = []
+    qs = (q or "").strip()
+    # coordenadas diretas
+    try:
+        if "," in qs:
+            a,b = qs.split(",",1)
+            lat = float(a.strip()); lon = float(b.strip())
+            results.append({"label": f"{lat:.6f}, {lon:.6f}", "lat": lat, "lon": lon, "provider": "manual"})
+    except Exception:
+        pass
+    # Photon
+    try:
+        gp = _geocoder_photon()
+        if gp:
+            locs = gp.geocode(qs, exactly_one=False, limit=limit, timeout=5)
+            if locs:
+                for L in locs:
+                    results.append({"label": getattr(L, "address", qs), "lat": L.latitude, "lon": L.longitude, "provider": "photon"})
+    except Exception:
+        pass
+    # Nominatim
+    try:
+        gn = _geocoder()
+        if gn:
+            remain = max(0, limit - len(results))
+            if remain:
+                locs = gn.geocode(qs, exactly_one=False, limit=remain, timeout=5)
+                if locs:
+                    for L in locs:
+                        results.append({"label": getattr(L, "address", qs), "lat": L.latitude, "lon": L.longitude, "provider": "nominatim"})
+    except Exception:
+        pass
+    # ArcGIS
+    try:
+        ga = _geocoder_arcgis()
+        if ga:
+            remain = max(0, limit - len(results))
+            if remain:
+                locs = ga.geocode(qs, out_fields='*', maxRows=remain)
+                if locs:
+                    iterlocs = locs if isinstance(locs, list) else [locs]
+                    for L in iterlocs:
+                        results.append({"label": getattr(L, "address", qs), "lat": L.latitude, "lon": L.longitude, "provider": "arcgis"})
+    except Exception:
+        pass
+    # dedup
+    seen = set(); dedup = []
+    for r in results:
+        key = (round(r["lat"],5), round(r["lon"],5), r["label"].lower())
+        if key in seen: continue
+        seen.add(key); dedup.append(r)
+    return dedup[:limit]
 
 # ================== CONSTANTES ==================
 PX_PER_KM_FIXED = 40            # 25 m/pixel
@@ -137,6 +215,23 @@ with st.sidebar:
         # Data/hora de observação
         obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
         obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
+
+    # 🔎 Busca com AUTOCOMPLETE (Photon/Nominatim/ArcGIS)
+    with st.expander("🔎 Buscar lugar (autocomplete)", expanded=False):
+        q = st.text_input("Digite um lugar, endereço ou lat,lon", key="query_text", placeholder="Ex.: 'Cabiúnas, Macaé' ou -22.91,-41.42")
+        do_search = st.button("Procurar", key="btn_search")
+        if do_search and q:
+            ss.search_results = geocode_multi(q, limit=8)
+        results = ss.get("search_results", [])
+        if results:
+            labels = [f"{r['label']} — {r['provider']}" for r in results]
+            idx = st.selectbox("Resultados", list(range(len(results))), format_func=lambda i: labels[i], key="search_sel")
+            lat_s, lon_s = results[idx]["lat"], results[idx]["lon"]
+            c1, c2 = st.columns(2)
+            if c1.button("Centralizar no mapa", use_container_width=True):
+                ss.pending_click = (lat_s, lon_s)
+            if c2.button("Fixar como fonte", type="primary", use_container_width=True):
+                ss.source = (lat_s, lon_s); ss.locked = True; ss._update = True
 
     st.markdown("---")
     co, cr = st.columns(2)
@@ -274,6 +369,10 @@ if ss.source is None or not ss.locked:
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
     folium.TileLayer("OpenStreetMap").add_to(m_sel)
+    # 🔎 Busca no mapa (Nominatim)
+    if Geocoder:
+        Geocoder(collapsed=False, add_marker=True, position='topleft',
+                 placeholder='Buscar lugar…').add_to(m_sel)
 
     if ScaleBar: ScaleBar(position="bottomleft", imperial=False).add_to(m_sel)
     m_sel.add_child(MeasureControl(primary_length_unit='meters',
@@ -372,6 +471,10 @@ else:
     # mapa final
     m1 = folium.Map(location=[lat, lon], zoom_start=15, control_scale=True)
     folium.TileLayer("OpenStreetMap").add_to(m1)
+    # 🔎 Busca no mapa (Nominatim)
+    if Geocoder:
+        Geocoder(collapsed=False, add_marker=True, position='topleft',
+                 placeholder='Buscar lugar…').add_to(m1)
     if ScaleBar: ScaleBar(position="bottomleft", imperial=False).add_to(m1)
     m1.add_child(MeasureControl(primary_length_unit='meters',
                                 secondary_length_unit='kilometers', position='topleft'))
@@ -401,5 +504,3 @@ else:
 
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
- 
