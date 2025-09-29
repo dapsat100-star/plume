@@ -1,4 +1,4 @@
-# app.py — mira arrastável + botão Confirmar sempre visível + reverse geocode + pluma ppb
+# app.py — mira arrastável + Confirmar sempre visível + fallback por clique + reverse geocode + pluma ppb
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -24,7 +24,7 @@ st.markdown("""
 # ============ ESTADO ============
 ss = st.session_state
 ss.setdefault("source", None)         # (lat, lon) confirmado
-ss.setdefault("pending_click", None)  # último ponto da mira (lat, lon)
+ss.setdefault("pending_click", None)  # último ponto selecionado (lat, lon)
 ss.setdefault("overlay", None)
 ss.setdefault("_update", False)
 ss.setdefault("locked", False)
@@ -156,9 +156,9 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ============ SELEÇÃO COM MIRA ARRASTÁVEL (robusta; botão sempre visível) ============
+# ============ SELEÇÃO: MIRA ARRASTÁVEL + FALLBACK CLIQUE ============
 if ss.source is None or not ss.locked:
-    st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione a MIRA “＋”, ARRASTE para ajustar e depois confirme.")
+    st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione/ARRASTE a MIRA “＋” e depois confirme. (Também vale clique simples no mapa.)")
 
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
@@ -174,7 +174,7 @@ if ss.source is None or not ss.locked:
         edit_options={"edit": True, "remove": True}
     ).add_to(m_sel)
 
-    # Define ícone "mira" (DivIcon) e garante arrastar
+    # Ícone "mira" (DivIcon) + arrastar habilitado
     custom_js = """
     <script>
     (function(){
@@ -205,16 +205,17 @@ if ss.source is None or not ss.locked:
     """
     m_sel.get_root().html.add_child(folium.Element(custom_js))
 
-    # Render do mapa e captura
+    # Render do mapa e captura — agora com fallback "last_clicked"
     ret = st_folium(
         m_sel,
         height=620,
-        returned_objects=["all_drawings", "last_draw"],
+        returned_objects=["all_drawings", "last_draw", "last_clicked"],
         use_container_width=True
     )
 
-    # Extrai (lat, lon) da mira — tenta all_drawings e last_draw
+    # Extrai (lat, lon) — tenta all_drawings, depois last_draw, depois clique simples
     def _extract_point(ret_obj):
+        # 1) edições/arrastes
         drawings = ret_obj.get("all_drawings") if ret_obj else None
         if drawings:
             for feat in drawings[::-1]:
@@ -224,6 +225,7 @@ if ss.source is None or not ss.locked:
                         return float(lat), float(lon)
                 except Exception:
                     pass
+        # 2) último desenho criado
         last_draw = ret_obj.get("last_draw") if ret_obj else None
         if last_draw:
             try:
@@ -232,38 +234,41 @@ if ss.source is None or not ss.locked:
                     return float(lat), float(lon)
             except Exception:
                 pass
+        # 3) clique simples no mapa
+        last_clicked = ret_obj.get("last_clicked") if ret_obj else None
+        if last_clicked and "lat" in last_clicked and "lng" in last_clicked:
+            return float(last_clicked["lat"]), float(last_clicked["lng"])
         return None
 
     new_pt = _extract_point(ret)
     if new_pt is not None:
         ss.pending_click = new_pt
 
-    # Painel SEMPRE visível; Confirmar habilita só quando há ponto válido
-    lat_p = lon_p = None
+    # Painel SEMPRE visível; Confirmar habilita quando há ponto válido
     if ss.pending_click is not None:
         lat_p, lon_p = ss.pending_click
         addr = reverse_geocode(lat_p, lon_p)
         st.markdown(
-            f"📍 **Mira:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
+            f"📍 **Ponto selecionado:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
             unsafe_allow_html=True
         )
     else:
-        st.caption("Posicione a mira e/ou arraste antes de confirmar.")
+        st.caption("Posicione a mira (ou clique no mapa) para habilitar o botão de confirmar.")
 
     col_ok, col_rm = st.columns(2)
-    col_ok_btn = col_ok.button("✅ Confirmar este ponto", use_container_width=True, disabled=(ss.pending_click is None))
-    col_rm_btn = col_rm.button("🗑 Remover mira e refazer", use_container_width=True, disabled=(ss.pending_click is None))
+    btn_ok = col_ok.button("✅ Confirmar este ponto", use_container_width=True, disabled=(ss.pending_click is None))
+    btn_rm = col_rm.button("🗑 Remover/limpar seleção", use_container_width=True, disabled=(ss.pending_click is None))
 
-    if col_ok_btn and ss.pending_click is not None:
+    if btn_ok and ss.pending_click is not None:
         ss.source = ss.pending_click
         ss.locked = True
         ss._update = True
         ss.pending_click = None
         st.success("Fonte confirmada. Gerando pluma…")
 
-    if col_rm_btn and ss.pending_click is not None:
+    if btn_rm and ss.pending_click is not None:
         ss.pending_click = None
-        st.info("Clique no botão de marcador (alvo) e posicione a mira novamente.")
+        st.info("Seleção limpa. Posicione a mira ou clique no mapa novamente.")
 
 else:
     # ====== SIMULAÇÃO / RENDER ======
