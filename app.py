@@ -1,5 +1,7 @@
 # app.py — Pluma CH4 + Footprint GHGSat 5x5 km (TLE de arquivo) — clique simples + anti-rerun
 # -*- coding: utf-8 -*-
+import streamlit as st
+ss = st.session_state
 import io, base64, os
 import numpy as np
 import streamlit as st
