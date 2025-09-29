@@ -1,4 +1,4 @@
-# app_ppb_legend_right_fixed_25mppx.py
+# app_ppb_legend_right_fixed_25mppx_kgph.py
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -6,11 +6,9 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 from PIL import Image
-from folium import MacroElement
-from jinja2 import Template
 
-st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel)", layout="wide")
-st.title("Pluma Gaussiana — ABSOLUTA (ppb), legenda à direita e resolução fixa 25 m/pixel")
+st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel, kg/h)", layout="wide")
+st.title("Pluma Gaussiana — ABSOLUTA (ppb), 25 m/pixel, emissão em kg CH₄/h")
 
 # ---- Sidebar scroll CSS ----
 st.markdown('''
@@ -27,9 +25,9 @@ ss.setdefault("_update", False)
 ss.setdefault("locked", False)
 
 # ---- Constantes ----
-R_univ = 8.314462618
-M_CH4 = 16.043
-PX_PER_KM_FIXED = 40  # equivale a 25 m/pixel
+R_univ = 8.314462618  # J mol^-1 K^-1
+M_CH4  = 16.043       # g/mol
+PX_PER_KM_FIXED = 40  # 25 m/pixel
 
 # ---- Sidebar ----
 with st.sidebar:
@@ -43,8 +41,8 @@ with st.sidebar:
         P_hPa = st.number_input("Pressão (hPa)", 800.0, 1050.0, 1013.25, 0.5)
         Tamb = st.number_input("Temperatura (K)", 230.0, 330.0, 298.0, 0.5)
 
-    with st.expander("🏭 Fonte / Chaminé", expanded=False):
-        Q_gps = st.number_input("Taxa de emissão Q (g/s)", 0.001, 1e9, 27.78, 0.01, help="100 kg/h ≈ 27.78 g/s")
+    with st.expander("🏭 Fonte / Chaminé", expanded=True):
+        Q_kgph = st.number_input("Taxa de emissão Q (kg CH₄/h)", 0.001, 1e6, 100.0, 0.1, help="Ex.: 100 kg/h ≈ 27,78 g/s")
         H_stack = st.number_input("Altura geométrica (m)", 0.0, 500.0, 10.0, 0.5)
         d_stack = st.number_input("Diâmetro (m)", 0.05, 10.0, 0.5, 0.05)
         V_exit = st.number_input("Velocidade de saída (m/s)", 0.1, 120.0, 15.0, 0.1)
@@ -110,7 +108,7 @@ def compute_conc(lat, lon, p):
     mask = Xp>0
     sigy,sigz = sigma_yz(np.where(mask,Xp,1), p["stability"], p["is_urban"])
     H_eff = effective_height(p["H"], p["V"], p["d"], p["Tamb"], p["Tstack"], p["u"])
-    pref = p["Q"]/(2*np.pi*p["u"]*sigy*sigz+1e-12)
+    pref = p["Q_gps"]/(2*np.pi*p["u"]*sigy*sigz+1e-12)
     C = pref*np.exp(-0.5*(Yp**2)/sigy**2)*(np.exp(-0.5*(H_eff**2)/sigz**2)+np.exp(-0.5*(H_eff**2)/sigz**2))
     C[~mask]=0
     dlat = half/m_lat; dlon = half/m_lon
@@ -133,7 +131,6 @@ def render_ppb(A,vmin=0,vmax=450,log=False):
     alpha=(np.sqrt(N)*255).astype(np.uint8); alpha[N<=0.003]=0
     return np.dstack([lut[idx],alpha]).astype(np.uint8)
 
-# ---- Legend
 def add_legend(m):
     html = '''
     <div style="position:absolute; top:80px; right:10px; width:36px; height:340px; z-index:9999;">
@@ -156,7 +153,7 @@ def add_badge(m):
     <div style="position:absolute; top:430px; right:10px; z-index:9999;
                 background:rgba(255,255,255,0.85); padding:2px 6px; border-radius:6px;
                 font-size:12px; font-weight:600; color:#333; box-shadow:0 0 4px rgba(0,0,0,0.2);">
-      Resolução: 25 m/pixel
+      Resolução: 25 m/pixel · Emissão em kg/h
     </div>'''
     m.get_root().html.add_child(folium.Element(badge))
 
@@ -171,8 +168,11 @@ if ss.source is None or not ss.locked:
         ss._update = True
 else:
     lat, lon = ss.source
-    p=dict(wind_dir=wind_dir,wind_speed=wind_speed,stability=stability,is_urban=is_urban,
-           Q=Q_gps,H=H_stack,d=d_stack,V=V_exit,Tamb=Tamb,Tstack=Tstack,u=wind_speed)
+    # Convert kg/h -> g/s
+    Q_gps = (Q_kgph * 1000.0) / 3600.0
+
+    p=dict(wind_dir=wind_dir, wind_speed=wind_speed, stability=stability, is_urban=is_urban,
+           Q_gps=Q_gps, H=H_stack, d=d_stack, V=V_exit, Tamb=Tamb, Tstack=Tstack, u=wind_speed)
     if ss._update or ss.overlay is None:
         C,bounds=compute_conc(lat,lon,p)
         Cppb=to_ppb(C,P_hPa,Tamb)
