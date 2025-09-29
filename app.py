@@ -15,14 +15,26 @@ try:
 except Exception:
     Geocoder = None
 from streamlit_folium import st_folium
-from PIL import Image
-import matplotlib
+
+# Requisições HTTP (para logo via URL/GitHub raw)
+try:
+    import requests
+except Exception:
+    requests = None
 from geopy.geocoders import Nominatim, Photon, ArcGIS
 import datetime as dt
 
 # ================== CONFIG ==================
 st.set_page_config(page_title="Pluma CH₄ + GHGSat Footprint (TLE do arquivo)", layout="wide")
 st.title("Pluma Gaussiana (CH₄) · 25 m/pixel · ppb 0–450 + Footprint GHGSat 5×5 km (via TLE)")
+# Logo no topo (fixo)
+if ss.get("logo_bytes"):
+    _logo_b64 = base64.b64encode(ss.logo_bytes).decode("utf-8")
+    _w = int(ss.get("logo_w", 140))
+    st.markdown(
+        f"<div class='branding-fixed'><img src='data:image/png;base64,{_logo_b64}' style='width:{_w}px;'/></div>",
+        unsafe_allow_html=True,
+    )
 st.markdown(
     """
 <style>
@@ -50,6 +62,19 @@ st.markdown(
   height: 34px !important;
   padding: 6px 10px !important;
 }
+
+/* 🔖 Logo fixo (topo direito) */
+.branding-fixed {
+  position: fixed;
+  top: 8px;
+  right: 16px;
+  z-index: 1000;
+  pointer-events: none; /* não intercepta cliques */
+}
+.branding-fixed img { max-height: 56px; height: auto; }
+@media (max-width: 768px) {
+  .branding-fixed img { max-height: 44px; }
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -65,6 +90,8 @@ ss.setdefault("locked", False)
 ss.setdefault("tle_cache", {})
 ss.setdefault("tle_path_loaded", "")
 ss.setdefault("search_results", [])
+ss.setdefault("logo_bytes", None)
+ss.setdefault("logo_w", 140)
 # NÃO defina/atribua ss["tle_choice"] depois que o widget com key="tle_choice" existir
 
 # defaults ESTÁVEIS para data/hora (evita loop com utcnow)
@@ -78,12 +105,21 @@ if "obs_date" not in ss or "obs_time" not in ss:
 def _geocoder():
     return Nominatim(user_agent="plume_streamlit_app")
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def reverse_geocode(lat, lon):
-    try:
-        g = _geocoder()
+@st.cache_data(show_spinner=False, ttl=er()
         loc = g.reverse((lat, lon), language="pt", zoom=18, exactly_one=True, timeout=5)
         return loc.address if loc else None
+    except Exception:
+        return None
+
+# Baixar logo por URL (ex.: GitHub raw)
+@st.cache_data(show_spinner=False, ttl=3600)
+def fef not url:
+            return None
+        if requests is None:
+            return None
+        r = requests.get(url, timeout=8)
+        r.raise_for_status()
+        return r.content
     except Exception:
         return None
 
@@ -254,6 +290,19 @@ with st.sidebar:
                 ss.pending_click = (lat_s, lon_s)
             if c2.button("Fixar como fonte", type="primary", use_container_width=True):
                 ss.source = (lat_s, lon_s); ss.locked = True; ss._update = True
+
+    st.markdown("---")
+    # 🎨 Marca (uploader/path e tamanho)
+    with st.expander("🎨 Marca (logo no topo)", expanded=False):
+        up = st.file_uploader("Logo MAVIPE (PNG/JPG)", type=["png","jpg","jpeg"], key="logo_upl")
+    URL. Verifique o link raw e permissões.")
+        elif logo_path:
+            try:
+                if os.path.exists(logo_path):
+                    with open(logo_path, "rb") as f:
+                        ss.logo_bytes = f.read()
+            except Exception:
+                st.warning("Logo local não encontrado.")
 
     st.markdown("---")
     co, cr = st.columns(2)
