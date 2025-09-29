@@ -1,4 +1,4 @@
-# app.py — mira arrastável + Confirmar sempre visível + fallback por clique + reverse geocode + pluma ppb
+# app.py — mira arrastável + captura em tempo real (last_active_drawing) + clique fallback
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
@@ -107,7 +107,7 @@ def effective_height(H, V, d, Tamb, Tstack, u):
     return H + max(delta_m, delta_b, 0.0)
 
 def compute_conc(lat, lon, p):
-    extent_km = 2.0                 # ~1 km de raio
+    extent_km = 2.0                 # ~1 km de raio (25 m/pixel → 80 px por km → 160 px)
     px_per_km = PX_PER_KM_FIXED     # 25 m/pixel
     R_earth = 6371000.0
     lat_rad = np.deg2rad(lat)
@@ -156,9 +156,10 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ============ SELEÇÃO: MIRA ARRASTÁVEL + FALLBACK CLIQUE ============
+# ============ SELEÇÃO: MIRA ARRASTÁVEL + TEMPO REAL + CLIQUE ============
 if ss.source is None or not ss.locked:
-    st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione/ARRASTE a MIRA “＋” e depois confirme. (Também vale clique simples no mapa.)")
+    st.info("🎯 Na barra do mapa, clique no **marcador (alvo)**, posicione/ARRASTE a mira e **clique em Save** na barrinha cinza. "
+            "Se preferir, um **clique simples** no mapa também habilita o botão.")
 
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
@@ -205,46 +206,56 @@ if ss.source is None or not ss.locked:
     """
     m_sel.get_root().html.add_child(folium.Element(custom_js))
 
-    # Render do mapa e captura — agora com fallback "last_clicked"
+    # Render do mapa e captura (inclui last_active_drawing)
     ret = st_folium(
         m_sel,
-        height=620,
-        returned_objects=["all_drawings", "last_draw", "last_clicked"],
+        height=560,
+        returned_objects=[
+            "all_drawings",
+            "last_active_drawing",  # posição atual da mira enquanto arrasta
+            "last_draw",
+            "last_clicked"
+        ],
         use_container_width=True
     )
 
-    # Extrai (lat, lon) — tenta all_drawings, depois last_draw, depois clique simples
+    # Extrai (lat, lon): 1) enquanto arrasta; 2) após Save; 3) criação; 4) clique simples
     def _extract_point(ret_obj):
-        # 1) edições/arrastes
+        lad = ret_obj.get("last_active_drawing") if ret_obj else None
+        if lad:
+            try:
+                if lad["geometry"]["type"] == "Point":
+                    lon, lat = lad["geometry"]["coordinates"]
+                    return float(lat), float(lon)
+            except Exception:
+                pass
         drawings = ret_obj.get("all_drawings") if ret_obj else None
         if drawings:
             for feat in drawings[::-1]:
                 try:
                     if feat and feat["geometry"]["type"] == "Point":
-                        lon, lat = feat["geometry"]["coordinates"]  # GeoJSON: [lon, lat]
+                        lon, lat = feat["geometry"]["coordinates"]
                         return float(lat), float(lon)
                 except Exception:
                     pass
-        # 2) último desenho criado
-        last_draw = ret_obj.get("last_draw") if ret_obj else None
-        if last_draw:
+        ld = ret_obj.get("last_draw") if ret_obj else None
+        if ld:
             try:
-                if last_draw["geometry"]["type"] == "Point":
-                    lon, lat = last_draw["geometry"]["coordinates"]
+                if ld["geometry"]["type"] == "Point":
+                    lon, lat = ld["geometry"]["coordinates"]
                     return float(lat), float(lon)
             except Exception:
                 pass
-        # 3) clique simples no mapa
-        last_clicked = ret_obj.get("last_clicked") if ret_obj else None
-        if last_clicked and "lat" in last_clicked and "lng" in last_clicked:
-            return float(last_clicked["lat"]), float(last_clicked["lng"])
+        lc = ret_obj.get("last_clicked") if ret_obj else None
+        if lc and "lat" in lc and "lng" in lc:
+            return float(lc["lat"]), float(lc["lng"])
         return None
 
     new_pt = _extract_point(ret)
     if new_pt is not None:
         ss.pending_click = new_pt
 
-    # Painel SEMPRE visível; Confirmar habilita quando há ponto válido
+    # Painel e botões (Confirmar habilita assim que existir ponto)
     if ss.pending_click is not None:
         lat_p, lon_p = ss.pending_click
         addr = reverse_geocode(lat_p, lon_p)
@@ -253,22 +264,22 @@ if ss.source is None or not ss.locked:
             unsafe_allow_html=True
         )
     else:
-        st.caption("Posicione a mira (ou clique no mapa) para habilitar o botão de confirmar.")
+        st.caption("Posicione/arraste a mira e clique em **Save** (ou clique no mapa) para habilitar o botão.")
 
-    col_ok, col_rm = st.columns(2)
-    btn_ok = col_ok.button("✅ Confirmar este ponto", use_container_width=True, disabled=(ss.pending_click is None))
-    btn_rm = col_rm.button("🗑 Remover/limpar seleção", use_container_width=True, disabled=(ss.pending_click is None))
+    c_ok, c_rm = st.columns(2)
+    ok_btn = c_ok.button("✅ Confirmar este ponto", use_container_width=True, disabled=(ss.pending_click is None))
+    rm_btn = c_rm.button("🗑 Remover/limpar seleção", use_container_width=True, disabled=(ss.pending_click is None))
 
-    if btn_ok and ss.pending_click is not None:
+    if ok_btn and ss.pending_click is not None:
         ss.source = ss.pending_click
         ss.locked = True
         ss._update = True
         ss.pending_click = None
         st.success("Fonte confirmada. Gerando pluma…")
 
-    if btn_rm and ss.pending_click is not None:
+    if rm_btn and ss.pending_click is not None:
         ss.pending_click = None
-        st.info("Seleção limpa. Posicione a mira ou clique no mapa novamente.")
+        st.info("Seleção limpa. Posicione a mira novamente.")
 
 else:
     # ====== SIMULAÇÃO / RENDER ======
