@@ -14,6 +14,16 @@ try:
     from folium.plugins import Geocoder
 except Exception:
     Geocoder = None
+# Seta de direção (texto ao longo da linha)
+try:
+    from folium.plugins import PolyLineTextPath as PolyArrow
+except Exception:
+    PolyArrow = None
+# Marcador triangular (fallback)
+try:
+    from folium.features import RegularPolygonMarker
+except Exception:
+    RegularPolygonMarker = None
 from streamlit_folium import st_folium
 from PIL import Image
 import matplotlib
@@ -501,16 +511,62 @@ def _bearing_deg(lat1, lon1, lat2, lon2):
     return (degrees(atan2(x, y)) + 360.0) % 360.0
 
 def tle_heading_and_sense(tle_l1, tle_l2, dt_utc):
-    """Heading (N=0°, horário) e sentido (asc/desc) no instante dt_utc via Skyfield."""
+    """Heading (0°=N, 90°=E, horário) e sentido (asc/desc) no instante dt_utc via Skyfield.
+    """
     from skyfield.api import load, EarthSatellite
     ts = load.timescale()
     sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
+    # amostra centrada para derivada temporal estável
     t0 = ts.utc(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour, dt_utc.minute, dt_utc.second - 1)
     t1 = ts.utc(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour, dt_utc.minute, dt_utc.second + 1)
     sp0 = sat.at(t0).subpoint(); sp1 = sat.at(t1).subpoint()
     lat0, lon0 = sp0.latitude.degrees, sp0.longitude.degrees
     lat1, lon1 = sp1.latitude.degrees, sp1.longitude.degrees
-    return _bearing_deg(lat0, lon0, lat1, lon1), (lat1 > lat0)
+    heading = _bearing_deg(lat0, lon0, lat1, lon1)  # 0°=N, 90°=E
+    # Critério robusto: norte = heading ∈ [270°,360°) ∪ [0°,90°]; sul = (90°,270°)
+    if 90.0 < heading < 270.0:
+        is_asc = False  # descendente (rumo ao sul)
+    elif 85.0 < heading < 95.0 or 265.0 < heading < 275.0:
+        # quase leste/oeste: decide pelo sinal de Δlat
+        is_asc = (lat1 > lat0)
+    else:
+        is_asc = True   # ascendente (rumo ao norte)
+    return heading, is_asc
+
+# --- util: ponto destino dado azimute e distância ---
+from math import radians, degrees, sin, cos, asin, atan2, pi
+
+def dest_point(lat, lon, bearing_deg, dist_m):
+    R = 6371000.0
+    φ1, λ1 = radians(lat), radians(lon)
+    θ = radians(bearing_deg)
+    δ = dist_m / R
+    φ2 = asin(sin(φ1)*cos(δ) + cos(φ1)*sin(δ)*cos(θ))
+    λ2 = λ1 + atan2(sin(θ)*sin(δ)*cos(φ1), cos(δ) - sin(φ1)*sin(φ2))
+    lon2 = (degrees(λ2) + 540) % 360 - 180
+    return degrees(φ2), lon2
+
+# --- adiciona seta de direção no centro do footprint ---
+def add_heading_arrow(m, lat, lon, heading_deg, color="#00c853"):
+    try:
+        lat2, lon2 = dest_point(lat, lon, heading_deg, 3000.0)  # 3 km
+        pl = folium.PolyLine(locations=[(lat, lon), (lat2, lon2)], color=color, weight=4, opacity=1.0)
+        pl.add_to(m)
+        if PolyArrow is not None:
+            PolyArrow(
+                pl,
+                "▶",
+                repeat=True,
+                offset=8,
+                attributes={"fill": color, "font-weight": "bold", "font-size": "24"},
+            ).add_to(m)
+        elif RegularPolygonMarker is not None:
+            # marcador triangular apontando na direção do heading
+            RegularPolygonMarker(location=[lat2, lon2], number_of_sides=3, radius=10,
+                                 rotation=heading_deg, color=color, fill=True, fill_color=color,
+                                 fill_opacity=1.0).add_to(m)
+    except Exception:
+        pass
 
 # ================== SELEÇÃO (clique simples + marcador provisório) ==================
 if ss.source is None or not ss.locked:
@@ -667,6 +723,8 @@ else:
                 fill_opacity=0.12,       # leve preenchimento
                 tooltip=f"GHGSat {sat_name} • {label} • heading {heading_deg:.1f}° @ {t_utc.isoformat()}"
             ).add_to(m1)
+            # seta de direção do voo
+            add_heading_arrow(m1, lat, lon, heading_deg, color="#00c853")
             st.caption(f"🛰 {sat_name} · heading {heading_deg:.1f}° (N=0°, horário) · {label}")
         except Exception as e:
             st.warning(f"Footprint via TLE falhou: {e}")
