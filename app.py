@@ -1,9 +1,10 @@
-# app.py — seleção por clique (crosshair) + confirmação + reverse geocode + simulação
+# app.py — mira arrastável (Leaflet.draw) + confirmação + reverse geocode + pluma ppb
 # -*- coding: utf-8 -*-
 import io, base64
 import numpy as np
 import streamlit as st
 import folium
+from folium.plugins import Draw
 from streamlit_folium import st_folium
 from PIL import Image
 from matplotlib import cm
@@ -13,7 +14,6 @@ from geopy.geocoders import Nominatim
 st.set_page_config(page_title="Pluma Gaussiana — ppb (25 m/pixel, kg/h)", layout="wide")
 st.title("Pluma Gaussiana — 25 m/pixel · emissão em kg CH₄/h · ppb 0–450")
 
-# Sidebar rolável e botões confortáveis
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { overflow-y: auto; max-height: 100vh; }
@@ -24,7 +24,7 @@ st.markdown("""
 # ============ ESTADO ============
 ss = st.session_state
 ss.setdefault("source", None)         # (lat, lon) confirmado
-ss.setdefault("pending_click", None)  # (lat, lon) proposto
+ss.setdefault("pending_click", None)  # último ponto da mira (lat, lon)
 ss.setdefault("overlay", None)
 ss.setdefault("_update", False)
 ss.setdefault("locked", False)
@@ -150,70 +150,99 @@ def render_ppb(A_ppb, vmin=V_ABS_MIN, vmax=V_ABS_MAX, log=False):
     else:
         A = A_ppb
         vmin_, vmax_ = vmin, vmax
-    N = np.clip((A - vmin_) / (vmax_ - vmin_ + 1e-12), 0, 1)
+    N = np.clip((A - vmin_) / (vmax - vmin + 1e-12), 0, 1)
     idx = (N*255).astype(np.uint8)
-    alpha = (np.sqrt(N)*255).astype(np.uint8); alpha[N<=0.003] = 0
+    alpha = (np.sqrt(N)*255).astype(np.uint8); alpha[N<=0.003]=0
     rgb = lut[idx]
     return np.dstack([rgb, alpha]).astype(np.uint8)
 
-# ============ SELEÇÃO POR CLIQUE (cursor crosshair) ============
+# ============ SELEÇÃO COM MIRA ARRASTÁVEL ============
 if ss.source is None or not ss.locked:
-    st.info("👆 Clique no mapa para **apontar** o local da fonte. O ponto pode ser confirmado ou cancelado.")
+    st.info("🎯 Clique no botão de marcador (alvo) na barra do mapa, coloque a MIRA “＋”, ARRASTE para ajustar e depois confirme.")
 
-    # cursor de mira durante a seleção
-    st.markdown("""
-    <style>
-    .leaflet-container { cursor: crosshair !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # mapa de seleção (evita zoom duplo por engano)
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
     folium.TileLayer("OpenStreetMap").add_to(m_sel)
-    m_sel.options["doubleClickZoom"] = False
 
-    # marcador provisório se já houve clique
-    if ss.pending_click is not None:
-        lat_p, lon_p = ss.pending_click
-        folium.CircleMarker(
-            [lat_p, lon_p], radius=7, color="#0066ff",
-            fill=True, fill_opacity=0.9, tooltip="Ponto provisório"
-        ).add_to(m_sel)
+    # toolbar (só Marker) + edição/remoção habilitadas
+    Draw(
+        draw_options={
+            "polyline": False, "polygon": False, "circle": False,
+            "circlemarker": False, "rectangle": False,
+            "marker": True
+        },
+        edit_options={"edit": True, "remove": True}
+    ).add_to(m_sel)
 
-    # captura clique
+    # Troca o ícone padrão do marcador por uma "mira" (DivIcon) e habilita arrastar
+    custom_js = """
+    <script>
+    (function(){
+      var map = window._leaflet_map_instance = window._leaflet_map_instance || (function(){
+        var k = Object.keys(window).find(k=>window[k] && window[k].setView && window[k].hasLayer && window[k].on && window[k].eachLayer);
+        return window[k];
+      })();
+      if (!map) return;
+      if (L && L.Draw && L.Draw.Marker) {
+        L.Draw.Marker.prototype.options.icon = L.divIcon({
+          className: 'crosshair-marker',
+          html: '<div style="font-size:28px;font-weight:700;color:red;text-shadow:1px 1px 2px #fff;">＋</div>',
+          iconSize: [20,20],
+          iconAnchor: [10,10]
+        });
+      }
+      map.on('draw:created', function (e) {
+        if (e.layer && e.layer.dragging) e.layer.dragging.enable();
+      });
+      map.on('draw:editstart', function(){
+        map.eachLayer(function(layer){
+          if (layer && layer.dragging && layer.getLatLng) { try { layer.dragging.enable(); } catch(_){} }
+        });
+      });
+    })();
+    </script>
+    """
+    m_sel.get_root().html.add_child(folium.Element(custom_js))
+
     ret = st_folium(
         m_sel,
         height=620,
-        returned_objects=["last_clicked"],
+        returned_objects=["all_drawings"],
         use_container_width=True
     )
 
-    # atualiza ponto pendente a cada clique
-    if ret and ret.get("last_clicked"):
-        ss.pending_click = (ret["last_clicked"]["lat"], ret["last_clicked"]["lng"])
+    # Pega a última Feature Point desenhada/arrastada
+    lat_p = lon_p = None
+    if ret and ret.get("all_drawings"):
+        drawings = ret["all_drawings"]
+        for feat in drawings[::-1]:
+            try:
+                if feat and feat["geometry"]["type"] == "Point":
+                    lon_p, lat_p = feat["geometry"]["coordinates"]  # GeoJSON: [lon, lat]
+                    break
+            except Exception:
+                pass
 
-    # painel de confirmação
-    if ss.pending_click is not None:
-        lat_p, lon_p = ss.pending_click
+    if lat_p is not None and lon_p is not None:
+        ss.pending_click = (lat_p, lon_p)
         addr = reverse_geocode(lat_p, lon_p)
         st.markdown(
-            f"📍 **Ponto proposto:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
+            f"📍 **Mira:** `{lat_p:.6f}, {lon_p:.6f}`" + (f"<br/>🏠 {addr}" if addr else ""),
             unsafe_allow_html=True
         )
-        c_ok, c_cancel = st.columns(2)
+        c_ok, c_rm = st.columns(2)
         if c_ok.button("✅ Confirmar este ponto", use_container_width=True):
             ss.source = ss.pending_click
             ss.locked = True
             ss._update = True
             ss.pending_click = None
             st.success("Fonte confirmada. Gerando pluma…")
-        if c_cancel.button("↩️ Cancelar / escolher outro", use_container_width=True):
+        if c_rm.button("🗑 Remover mira e refazer", use_container_width=True):
             ss.pending_click = None
-            st.info("Clique novamente no mapa para apontar outro local.")
+            st.info("Clique no botão de marcador e posicione a mira novamente.")
 
 else:
-    # ====== Simulação/render ======
+    # ====== SIMULAÇÃO / RENDER ======
     lat, lon = ss.source
     params = dict(
         wind_dir=wind_dir, wind_speed=wind_speed, stability=stability, is_urban=is_urban,
@@ -237,4 +266,3 @@ else:
     folium.CircleMarker([lat,lon], radius=6, color="#f00", fill=True, tooltip="Fonte").add_to(m1)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, use_container_width=True)
-
