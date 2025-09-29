@@ -49,15 +49,23 @@ st.markdown(
 /* ⬆️ Aumentar fonte do Geocoder no mapa (Leaflet) */
 .leaflet-control-geocoder,
 .leaflet-control-geocoder * {
-  font-size: 16px !important;
+  font-size: 20px !important;  /* era 16px */
 }
 .leaflet-control-geocoder-form input {
-  font-size: 16px !important;
-  height: 40px !important;
-  padding: 8px 12px !important;
+  font-size: 20px !important;
+  height: 48px !important;
+  padding: 10px 14px !important;
 }
 .leaflet-control-geocoder-form input::placeholder {
-  font-size: 16px !important;
+  font-size: 20px !important;
+}
+/* Resultados (autocomplete) */
+.leaflet-control-geocoder-alternatives {
+  font-size: 18px !important;  /* itens da lista */
+}
+.leaflet-control-geocoder-alternatives li a {
+  line-height: 1.35 !important;
+  padding: 8px 10px !important;
 }
 
 /* 🔖 Logo fixo (topo direito) */
