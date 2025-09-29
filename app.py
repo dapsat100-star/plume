@@ -390,7 +390,11 @@ if ss.source is None or not ss.locked:
 
     center0 = ss.pending_click or (-22.9035, -43.2096)
     m_sel = folium.Map(location=center0, zoom_start=16, control_scale=True, zoom_control=True)
-    folium.TileLayer("OpenStreetMap").add_to(m_sel)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+        name='Esri World Imagery'
+    ).add_to(m_sel)
     # 🔎 Busca no mapa (Nominatim)
     if Geocoder:
         Geocoder(collapsed=False, add_marker=True, position='topleft',
@@ -492,7 +496,11 @@ else:
 
     # mapa final
     m1 = folium.Map(location=[lat, lon], zoom_start=15, control_scale=True)
-    folium.TileLayer("OpenStreetMap").add_to(m1)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+        name='Esri World Imagery'
+    ).add_to(m1)
     # 🔎 Busca no mapa (Nominatim)
     if Geocoder:
         Geocoder(collapsed=False, add_marker=True, position='topleft',
