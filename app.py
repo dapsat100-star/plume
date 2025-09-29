@@ -320,6 +320,10 @@ with st.sidebar:
         obs_date = st.date_input("Data (UTC)", value=ss.obs_date, key="obs_date")
         obs_time = st.time_input("Hora (UTC)", value=ss.obs_time, key="obs_time")
 
+        # Forçar modo automático: não pedir horas/controles ao usuário
+        ad_hours = 0   # deixa o algoritmo expandir sozinho (72→120→168→240 h)
+        sep_deg = 160  # separação mínima entre headings (quase opostos)
+
         # Par visual: buscar próximo par com direção diferente (ASC & DESC)
         st.caption("Footprints visuais: busca um par de direções reais (ASC & DESC) à frente a partir do horário.")
         ad_hours = st.slider("Limite de busca à frente (horas)", 12, 168, 72, 6,
