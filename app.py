@@ -536,18 +536,36 @@ def find_pass_example_headings(tle_l1, tle_l2, center_dt, site_lat, site_lon,
     return found
 
 # --- busca simples (visual): próximo ASC e próximo DESC à frente ---
-def find_next_direction_pair(tle_l1, tle_l2, start_dt, max_hours: int = 72, step_s: int = 60, min_sep_deg: int = 160):
-    """Busca à frente o primeiro instante (qualquer direção) e o primeiro subsequente
-    com direção oposta **e** com separação angular >= min_sep_deg do primeiro.
-    Retorna {'first': (h1, t1, asc1), 'opposite': (h2, t2, asc2)}.
+def find_next_direction_pair_vec(sat, ts, start_dt, max_hours: int = 72, step_s: int = 60, min_sep_deg: int = 160):
+    """Varredura vetorizada: pega o primeiro heading e o primeiro subsequente
+    com direção oposta e separação angular >= min_sep_deg.
     """
-    out = {}
-    try:
-        from skyfield.api import load, EarthSatellite
-        ts = load.timescale()
-        sat = EarthSatellite(tle_l1.strip(), tle_l2.strip(), "GHGSat", ts)
-    except Exception:
-        return out
+    # grade temporal
+    N = int((max_hours*3600)//step_s) + 2
+    dts = [start_dt + dt.timedelta(seconds=i*step_s) for i in range(N)]
+    tarr = ts.from_datetimes(dts)
+    sp = sat.at(tarr).subpoint()
+    lat = sp.latitude.degrees
+    lon = sp.longitude.degrees
+    # bearings entre passos consecutivos
+    b = _bearing_deg_vec(lat[:-1], lon[:-1], lat[1:], lon[1:])
+    # classe asc/desc (asc se indo ao norte)
+    asc = (b <= 90.0) | (b >= 270.0)
+    # índice do primeiro
+    if len(b) == 0:
+        return {}
+    i0 = 0
+    asc0 = bool(asc[i0])
+    h0 = float(b[i0]); t0 = dts[i0+1]
+    # procurar oposto com separação suficiente
+    for j in range(i0+1, len(b)):
+        if bool(asc[j]) != asc0 and _ang_sep(float(b[j]), h0) >= float(min_sep_deg):
+            return {
+                'first': (h0, t0, asc0),
+                'opposite': (float(b[j]), dts[j+1], bool(asc[j]))
+            }
+    # não achou par
+    return {'first': (h0, t0, asc0)}
 
     t = start_dt
     end = start_dt + dt.timedelta(hours=max_hours)
@@ -645,6 +663,15 @@ def _bearing_deg(lat1, lon1, lat2, lon2):
     y = cos(φ1)*sin(φ2) - sin(φ1)*cos(φ2)*cos(Δλ)
     return (degrees(atan2(x, y)) + 360.0) % 360.0
 
+def _bearing_deg_vec(lat0, lon0, lat1, lon1):
+    """Versão vetorizada (numpy) do bearing 0°=N, 90°=E."""
+    lat0 = np.deg2rad(lat0); lat1 = np.deg2rad(lat1)
+    dlon = np.deg2rad(lon1 - lon0)
+    x = np.sin(dlon) * np.cos(lat1)
+    y = np.cos(lat0)*np.sin(lat1) - np.sin(lat0)*np.cos(lat1)*np.cos(dlon)
+    ang = np.degrees(np.arctan2(x, y))
+    return (ang + 360.0) % 360.0
+
 def tle_heading_and_sense(tle_l1, tle_l2, dt_utc):
     """Heading (0°=N, 90°=E, horário) e sentido (asc/desc) no instante dt_utc via Skyfield.
     """
@@ -669,6 +696,13 @@ def tle_heading_and_sense(tle_l1, tle_l2, dt_utc):
     return heading, is_asc
 
 # --- util: ponto destino dado azimute e distância ---
+@st.cache_resource(show_spinner=False)
+def get_sat_cached(name: str, l1: str, l2: str):
+    """Cacheia Timescale e EarthSatellite para evitar recriação a cada passo."""
+    from skyfield.api import load, EarthSatellite
+    ts = load.timescale()
+    sat = EarthSatellite(l1.strip(), l2.strip(), name, ts)
+    return ts, sat
 from math import radians, degrees, sin, cos, asin, atan2, pi
 
 def dest_point(lat, lon, bearing_deg, dist_m):
@@ -852,7 +886,8 @@ else:
             t_center = dt.datetime.combine(ss.obs_date, ss.obs_time).replace(tzinfo=dt.timezone.utc)
 
             # Sempre mostrar dois footprints (visual): primeiro instante e o primeiro com direção oposta
-            pair = find_next_direction_pair(l1, l2, t_center, max_hours=int(ad_hours), step_s=60, min_sep_deg=160)
+            ts_obj, sat_obj = get_sat_cached(sat_name, l1, l2)
+            pair = find_next_direction_pair_vec(sat_obj, ts_obj, t_center, max_hours=int(ad_hours), step_s=60, min_sep_deg=160)
 
             if 'first' in pair:
                 h1, t1, asc1 = pair['first']
@@ -890,4 +925,3 @@ else:
     add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
