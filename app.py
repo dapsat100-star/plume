@@ -958,4 +958,3 @@ else:
     add_ad_legend(m1, font_px=18)
     folium.LayerControl(collapsed=False).add_to(m1)
     st_folium(m1, height=720, key="map_final", use_container_width=True)
-
